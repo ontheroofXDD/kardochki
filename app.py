@@ -1,5 +1,5 @@
 """
-Telegram-бот: коллекционные музыкальные карточки. Deezer-импорт.
+Telegram-бот: музыкальные карточки. Deezer-импорт, промокоды, 2 канала.
 Стандартная библиотека Python.
 """
 import datetime as dt
@@ -197,9 +197,8 @@ ALBUM_HELP = (
     "<code>/addartist Имя | описание</code> + фото\n"
     "<code>/artists</code> · <code>/delartist ID</code> · <code>/setartistcover Имя</code> + фото\n\n"
     "🎧 <b>Импорт:</b> <code>/spotify ссылка_с_deezer.com</code>\n\n"
-    "🖼 <b>Прочее:</b>\n"
-    "<code>/setwelcome</code> + медиа · <code>/setwelcome off</code>\n"
-    "<code>/givecoins @ник 500</code>\n\n"
+    "🎟 <b>Промокоды:</b>\n"
+    "<code>/addpromo КОД 5000 [кол-во]</code> · <code>/delpromo КОД</code> · <code>/promos</code>\n\n"
     "📢 <b>Каналы:</b>\n"
     "<code>/setchannel @канал</code> · <code>/setchannel2 @канал</code>\n"
     "<code>/setchreward 2000</code> · <code>/setchreward2 1500</code>"
@@ -402,6 +401,16 @@ def init_db():
             user_id INTEGER NOT NULL, friend_id INTEGER NOT NULL, status TEXT NOT NULL,
             created INTEGER NOT NULL, PRIMARY KEY(user_id, friend_id)
         );
+        CREATE TABLE IF NOT EXISTS promocodes(
+            code TEXT PRIMARY KEY,
+            reward INTEGER NOT NULL,
+            uses_left INTEGER NOT NULL DEFAULT -1,
+            created INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS promocode_uses(
+            user_id INTEGER NOT NULL, code TEXT NOT NULL, used_at INTEGER NOT NULL,
+            PRIMARY KEY(user_id, code)
+        );
     """)
     ensure_columns("users", {
         "pity_leg": "INTEGER NOT NULL DEFAULT 0",
@@ -420,6 +429,9 @@ def init_db():
         "trades_ok": "INTEGER NOT NULL DEFAULT 0",
     })
     ensure_columns("cards", {"artist_id": "INTEGER"})
+    # стартовый промокод
+    db.execute("INSERT OR IGNORE INTO promocodes(code, reward, uses_left, created) VALUES(?,?,?,?)",
+               ("PIZDEC", 20000, -1, int(time.time())))
     db.commit()
     purge_demo()
 
@@ -876,6 +888,97 @@ def cmd_setartistcover(m, args):
     send(chat_id, f"🖼 Обложка обновлена: {esc(a['name'])}")
 
 
+# ───────────────────────── ПРОМОКОДЫ ─────────────────────────
+
+def cmd_promo(m, args):
+    uid, chat_id = m["from"]["id"], m["chat"]["id"]
+    code = (args or "").strip().upper()
+    if not code:
+        send(chat_id, "🎟 Введи код: <code>/promo КОД</code>")
+        return
+    p = db.execute("SELECT * FROM promocodes WHERE code=?", (code,)).fetchone()
+    if not p:
+        send(chat_id, "❌ Такого промокода нет.")
+        return
+    if p["uses_left"] == 0:
+        send(chat_id, "❌ Промокод исчерпан.")
+        return
+    used = db.execute("SELECT 1 FROM promocode_uses WHERE user_id=? AND code=?",
+                      (uid, code)).fetchone()
+    if used:
+        send(chat_id, "❌ Ты уже использовал этот промокод.")
+        return
+    db.execute("UPDATE users SET coins = coins + ? WHERE user_id=?", (p["reward"], uid))
+    db.execute("INSERT INTO promocode_uses(user_id, code, used_at) VALUES(?,?,?)",
+               (uid, code, int(time.time())))
+    if p["uses_left"] > 0:
+        db.execute("UPDATE promocodes SET uses_left = uses_left - 1 WHERE code=?", (code,))
+    db.commit()
+    new_balance = db.execute("SELECT coins FROM users WHERE user_id=?", (uid,)).fetchone()[0]
+    send(chat_id, f"🎟 <b>Промокод активирован!</b>\n\n💰 +{p['reward']} монет\n"
+                  f"Баланс: <b>{new_balance}</b>")
+
+
+def cmd_addpromo(m, args):
+    chat_id = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]):
+        send(chat_id, "Только для админа.")
+        return
+    parts = args.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        send(chat_id, "Формат: <code>/addpromo КОД 5000 [кол-во_активаций]</code>\n"
+                      "Без 3-го числа — без ограничений.")
+        return
+    code = parts[0].strip().upper()
+    reward = int(parts[1])
+    uses = int(parts[2]) if len(parts) > 2 and parts[2].lstrip("-").isdigit() else -1
+    db.execute("INSERT INTO promocodes(code, reward, uses_left, created) VALUES(?,?,?,?) "
+               "ON CONFLICT(code) DO UPDATE SET reward=excluded.reward, uses_left=excluded.uses_left",
+               (code, reward, uses, int(time.time())))
+    db.commit()
+    limit = "∞" if uses < 0 else str(uses)
+    send(chat_id, f"✅ Промокод <code>{code}</code>: +{reward} монет, активаций: {limit}")
+
+
+def cmd_delpromo(m, args):
+    chat_id = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]):
+        send(chat_id, "Только для админа.")
+        return
+    code = (args or "").strip().upper()
+    if not code:
+        send(chat_id, "Формат: <code>/delpromo КОД</code>")
+        return
+    cur = db.execute("DELETE FROM promocodes WHERE code=?", (code,))
+    db.commit()
+    if cur.rowcount:
+        send(chat_id, f"🗑 Промокод <code>{code}</code> удалён.")
+    else:
+        send(chat_id, "Не найден.")
+
+
+def cmd_promos(m, args):
+    chat_id = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]):
+        send(chat_id, "Только для админа.")
+        return
+    rows = db.execute("SELECT * FROM promocodes ORDER BY created DESC").fetchall()
+    if not rows:
+        send(chat_id, "Промокодов нет.")
+        return
+    lines = ["🎟 <b>Промокоды</b>\n"]
+    for r in rows:
+        used = db.execute("SELECT COUNT(*) FROM promocode_uses WHERE code=?",
+                          (r["code"],)).fetchone()[0]
+        if r["uses_left"] < 0:
+            limit = "∞"
+        else:
+            limit = f"{used}/∞"
+        lines.append(f"<code>{esc(r['code'])}</code> — +{r['reward']} монет · активаций: {used}"
+                     + ("" if r["uses_left"] < 0 else f" · осталось: {r['uses_left']}"))
+    send_long(chat_id, lines)
+
+
 # ───────────────────────── РЕФЕРАЛЫ ─────────────────────────
 
 def referral_link(uid):
@@ -1050,7 +1153,7 @@ def on_successful_payment(m):
             pass
 
 
-# ───────────────────────── КАНАЛЫ ─────────────────────────
+# ───────────────────────── КАНАЛЫ (2 раздельные) ─────────────────────────
 
 CH_SLOTS = {
     1: {"setting": "sub_channel",  "reward_setting": "ch_reward",  "table": "channel_rewards",
@@ -1110,10 +1213,12 @@ def channelsub_text(uid):
         cfg = CH_SLOTS[slot]
         reward = ch_reward(slot)
         got = ch_claimed(uid, slot)
-        lines += ["━━━━━━━━━━━━━━━━━━", cfg["label"], f"Награда: <b>+{reward}</b> монет (один раз)"]
+        lines += ["━━━━━━━━━━━━━━━━━━", cfg["label"],
+                  f"Награда: <b>+{reward}</b> монет (один раз)"]
         lines.append("✅ награда получена" if got else "<i>Подпишись и нажми «Проверить»</i>")
         lines.append("")
-        buttons.append([{"text": f"{cfg['emoji']} Перейти в #{slot}", "url": ch_url(ch_setting(slot))}])
+        buttons.append([{"text": f"{cfg['emoji']} Перейти в #{slot}",
+                         "url": ch_url(ch_setting(slot))}])
         if got:
             buttons.append([btn(f"✅ #{slot} уже получено", "noop")])
         else:
@@ -1147,7 +1252,7 @@ def cb_channelsub(cq, slot):
     db.execute("UPDATE users SET coins = coins + ? WHERE user_id=?", (reward, uid))
     ch_mark_claimed(uid, slot)
     db.commit()
-    send(chat_id, f"🎉 <b>+{reward} монет</b> за подписку!")
+    send(chat_id, f"🎉 <b>+{reward} монет</b> за подписку на {CH_SLOTS[slot]['label']}!")
     answer_cb(cq["id"], "Награда получена!")
     text, markup = channelsub_text(uid)
     edit_menu(cq, text, markup)
@@ -1708,7 +1813,7 @@ KEYBOARDS = {
     "shop": [["🛍 Магазин", "🚫 Снять значок"], ["◀ Назад"]],
     "coins": [[CLAIM_LABEL, "💳 Баланс"], ["◀ Назад"]],
     "admin": [["➕ Трек", "📋 Заявки"], ["🗂 Карточки", "💿 Помощь"],
-              ["🎧 Deezer", "🎤 Артисты"], ["◀ Назад"]],
+              ["🎧 Deezer", "🎤 Артисты"], ["🎟 Промокоды", "◀ Назад"]],
 }
 LABELS = {
     "🎴 Карточки": "g_cards", "💄 Косметика": "g_shop", "💰 Монеты": "g_coins",
@@ -1722,9 +1827,9 @@ LABELS = {
     "🛍 Магазин": "shop", "🚫 Снять значок": "unequip",
     CLAIM_LABEL: "claim", "💳 Баланс": "balance",
     "➕ Трек": "adm_add", "📋 Заявки": "adm_queue", "🗂 Карточки": "adm_list",
-    "💿 Помощь": "adm_album", "🎧 Deezer": "adm_spotify",
+    "💿 Помощь": "adm_album", "🎧 Deezer": "adm_spotify", "🎟 Промокоды": "promos_menu",
 }
-ADMIN_ACTIONS = {"g_admin", "adm_add", "adm_queue", "adm_list", "adm_album", "adm_spotify"}
+ADMIN_ACTIONS = {"g_admin", "adm_add", "adm_queue", "adm_list", "adm_album", "adm_spotify", "promos_menu"}
 NAV = {}
 
 
@@ -1818,8 +1923,9 @@ HELP = (
     "🎁 Рефералы · 🎯 Квесты · 🏅 Достижения\n"
     "🏷 Титулы · 👥 Друзья\n\n"
     "/claim · /open · /cards · /artists · /ref\n"
+    "/promo КОД — активировать промокод\n"
     "/trade @ник мой_id чужой_id · /user @ник · /suggest\n\n"
-    "🎧 Импорт треков: <code>/spotify ссылка_с_deezer.com</code>"
+    "🎧 Импорт: <code>/spotify ссылка_с_deezer.com</code>"
 )
 
 
@@ -2247,8 +2353,13 @@ def on_state(m, st):
             st["step"] = TEXT_STEPS[nxt]
             send(chat_id, PROMPTS[st["step"]])
         else:
-            st["step"] = "rarity"
-            send(chat_id, "Выбери редкость:", kb(rarity_rows(lambda k: f"ac:{k}")))
+            # ФИКС: для flow="sug" сразу завершаем заявку (редкость назначает админ)
+            if flow == "add":
+                st["step"] = "rarity"
+                send(chat_id, "Выбери редкость:", kb(rarity_rows(lambda k: f"ac:{k}")))
+            else:
+                STATE.pop(uid, None)
+                finish_suggest(uid, chat_id, data)
     elif step == "rarity":
         send(chat_id, "Выбери кнопкой выше.")
 
@@ -2358,11 +2469,13 @@ def panel_text():
     n_cards = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
     n_users = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     n_artists = db.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
+    n_promos = db.execute("SELECT COUNT(*) FROM promocodes").fetchone()[0]
     n_stars = db.execute("SELECT COALESCE(SUM(stars),0) FROM payments").fetchone()[0]
     ch1 = get_setting("sub_channel") or "—"
     ch2 = get_setting("sub_channel2") or "—"
     return (f"🛠 <b>Админ-панель</b>\n\n"
             f"👥 Игроков: {n_users}\n🎵 Карточек: {n_cards}\n🎤 Артистов: {n_artists}\n"
+            f"🎟 Промокодов: {n_promos}\n"
             f"📋 Заявок: {pending}\n⭐ Звёзд: {n_stars}\n"
             f"📢 Канал #1: <code>{esc(ch1)}</code>\n"
             f"📣 Канал #2: <code>{esc(ch2)}</code>")
@@ -2410,6 +2523,13 @@ def admin_action(chat_id, uid, action):
             send(chat_id, "Заявок нет 🎉")
         for r in rows:
             send_submission(chat_id, r)
+    elif action == "promos_menu":
+        send(chat_id,
+             "🎟 <b>Промокоды</b>\n\n"
+             "<code>/addpromo КОД 5000 [кол-во]</code> — создать\n"
+             "<code>/delpromo КОД</code> — удалить\n"
+             "<code>/promos</code> — список всех\n\n"
+             "Сейчас активные промокоды можно посмотреть командой /promos.")
 
 
 def cmd_clearcards(m, args):
@@ -2686,6 +2806,8 @@ COMMANDS = {
     "setartistcover": cmd_setartistcover,
     "setchannel": cmd_setchannel, "setchannel2": cmd_setchannel2,
     "setchreward": cmd_setchreward, "setchreward2": cmd_setchreward2,
+    "promo": cmd_promo, "addpromo": cmd_addpromo, "delpromo": cmd_delpromo,
+    "promos": cmd_promos,
 }
 
 
@@ -2892,6 +3014,7 @@ def main():
             {"command": "open", "description": "Крутить карточку"},
             {"command": "cards", "description": "Моя коллекция"},
             {"command": "artists", "description": "Артисты"},
+            {"command": "promo", "description": "Активировать промокод"},
             {"command": "quests", "description": "Квесты"},
             {"command": "achievements", "description": "Достижения"},
             {"command": "titles", "description": "Титулы"},
