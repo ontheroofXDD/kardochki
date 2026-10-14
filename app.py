@@ -1,325 +1,192 @@
-"""
-Telegram-бот: музыкальные карточки. Deezer-импорт, промокоды, 2 канала, МЕГА-донат.
-Стандартная библиотека Python.
-"""
-import datetime as dt
-import hashlib
-import html
-import json
-import os
-import random
-import re
-import sqlite3
-import sys
-import time
-import traceback
-import urllib.error
-import urllib.parse
-import urllib.request
+import datetime as dt, hashlib, html, json, os, random, re, sqlite3, sys, time, traceback
+import urllib.error, urllib.parse, urllib.request
 from urllib.parse import quote
 
-DEBUG_LOG = "bot_debug.log"
-
+LOG = "bot_debug.log"
 
 def say(msg):
     line = f"{dt.datetime.now():%d.%m %H:%M:%S} {msg}"
     try:
         import resource
-        mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
-        line += f" [память {mb} МБ]"
-    except Exception:
-        pass
+        line += f" [{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024} МБ]"
+    except: pass
     print(line, flush=True)
     try:
-        with open(DEBUG_LOG, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
+        with open(LOG, "a", encoding="utf-8") as f: f.write(line + "\n")
+    except: pass
 
-
-def _excepthook(t, v, tb):
-    say("❌ ОШИБКА:\n" + "".join(traceback.format_exception(t, v, tb)))
-
-
-sys.excepthook = _excepthook
-say("▶ python запустил app.py")
-
+def _eh(t, v, tb):
+    say("❌ " + "".join(traceback.format_exception(t, v, tb)))
+sys.excepthook = _eh
+say("▶ app.py запущен")
 
 def load_env():
     base = os.path.dirname(os.path.abspath(__file__))
-    for path in (os.path.join(base, ".env"), ".env"):
-        if os.path.isfile(path):
-            with open(path, encoding="utf-8-sig") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    for p in (os.path.join(base, ".env"), ".env"):
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8-sig") as f:
+                for l in f:
+                    l = l.strip()
+                    if l and not l.startswith("#") and "=" in l:
+                        k, v = l.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
             return
-
-
 load_env()
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not TOKEN:
-    say("❌ BOT_TOKEN не найден. Проверь .env")
-    raise SystemExit(1)
+    say("❌ BOT_TOKEN не найден"); sys.exit(1)
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.lstrip("-").isdigit()}
 DB_PATH = os.getenv("DB_PATH", "music.db")
 
-CLAIM_AMOUNT = int(os.getenv("CLAIM_AMOUNT", "450"))
-CLAIM_SECONDS = int(float(os.getenv("CLAIM_HOURS", "2")) * 3600)
-CLAIM_BONUS = int(os.getenv("CLAIM_BONUS", "200"))
-CLAIM_MAX_SECONDS = max(CLAIM_SECONDS, int(float(os.getenv("CLAIM_MAX_HOURS", "8")) * 3600))
-STEP_SECONDS = 3600
-PITY_LEGENDARY = int(os.getenv("PITY_LEGENDARY", "50"))
-PITY_EPIC = int(os.getenv("PITY_EPIC", "15"))
-OPEN_COST = int(os.getenv("OPEN_COST", "300"))
-REFERRAL_BONUS = int(os.getenv("REFERRAL_BONUS", "1000"))
-REFERRAL_MAX_AGE = 600
-SUB_BASIC_STARS = int(os.getenv("SUB_BASIC_STARS", "150"))
-SUB_PREMIUM_STARS = int(os.getenv("SUB_PREMIUM_STARS", "250"))
-SUB_DAYS = int(os.getenv("SUB_DAYS", "30"))
-SUB_BASIC_MULT = float(os.getenv("SUB_BASIC_MULT", "1.5"))
-SUB_PREMIUM_MULT = float(os.getenv("SUB_PREMIUM_MULT", "2.0"))
-MEGA_STARS = int(os.getenv("MEGA_STARS", "35"))
-MEGA_COINS = int(os.getenv("MEGA_COINS", "10000"))
-CHANNEL_REWARD = int(os.getenv("CHANNEL_REWARD", "2000"))
-CHANNEL2_REWARD = int(os.getenv("CHANNEL2_REWARD", "1500"))
+def env_int(k, d): return int(os.getenv(k, str(d)))
+def env_float(k, d): return float(os.getenv(k, str(d)))
 
-TRADE_TTL = 24 * 3600
+CLAIM_AMOUNT = env_int("CLAIM_AMOUNT", 450)
+CLAIM_SECONDS = int(env_float("CLAIM_HOURS", 2) * 3600)
+CLAIM_BONUS = env_int("CLAIM_BONUS", 200)
+CLAIM_MAX_SECONDS = max(CLAIM_SECONDS, int(env_float("CLAIM_MAX_HOURS", 8) * 3600))
+STEP = 3600
+PITY_L = env_int("PITY_LEGENDARY", 50)
+PITY_E = env_int("PITY_EPIC", 15)
+OPEN_COST = env_int("OPEN_COST", 300)
+REF_BONUS = env_int("REFERRAL_BONUS", 1000)
+REF_AGE = 600
+SUB_B_STARS = env_int("SUB_BASIC_STARS", 150)
+SUB_P_STARS = env_int("SUB_PREMIUM_STARS", 250)
+SUB_DAYS = env_int("SUB_DAYS", 30)
+SUB_B_MULT = env_float("SUB_BASIC_MULT", 1.5)
+SUB_P_MULT = env_float("SUB_PREMIUM_MULT", 2.0)
+MEGA_STARS = env_int("MEGA_STARS", 35)
+MEGA_COINS = env_int("MEGA_COINS", 10000)
+CH1_R = env_int("CHANNEL_REWARD", 2000)
+CH2_R = env_int("CHANNEL2_REWARD", 1500)
+TRADE_TTL = 86400
 PAGE = 12
 API = f"https://api.telegram.org/bot{TOKEN}/"
 BOT_USERNAME = ""
-
 esc = html.escape
 
 RARITIES = {
-    "common":    (68, "⚪", "Обычный", "Обычные"),
-    "rare":      (22, "🔵", "Редкий", "Редкие"),
-    "epic":      (7,  "🟣", "Эпический", "Эпические"),
-    "legendary": (3,  "🟡", "Легендарный", "Легендарные"),
+    "common": (68, "⚪", "Обычный", "Обычные"),
+    "rare": (22, "🔵", "Редкий", "Редкие"),
+    "epic": (7, "🟣", "Эпический", "Эпические"),
+    "legendary": (3, "🟡", "Легендарный", "Легендарные"),
 }
-RARITY_ORDER_SQL = "CASE {c} WHEN 'legendary' THEN 0 WHEN 'epic' THEN 1 WHEN 'rare' THEN 2 ELSE 3 END"
+RARITY_SQL = "CASE {c} WHEN 'legendary' THEN 0 WHEN 'epic' THEN 1 WHEN 'rare' THEN 2 ELSE 3 END"
 
 COSMETICS = {
-    "note": ("🎵", "Нотка", 500),
-    "mic": ("🎤", "Микрофон", 1000),
-    "vinyl": ("💿", "Винил", 1500),
-    "fire": ("🔥", "Огонь", 2500),
+    "note": ("🎵", "Нотка", 500), "mic": ("🎤", "Микрофон", 1000),
+    "vinyl": ("💿", "Винил", 1500), "fire": ("🔥", "Огонь", 2500),
     "crown": ("👑", "Корона", 5000),
 }
-
 FRAMES = {"common": "⬜️", "rare": "🟩", "epic": "🟪", "legendary": "🟧"}
-SPECIAL_FRAMES = {"crown": "👑", "fire": "🔥", "diamond": "💎", "rainbow": "🌈"}
+SPECIAL = {"crown": "👑", "fire": "🔥", "diamond": "💎", "rainbow": "🌈"}
 
-ACHIEVEMENTS = {
-    "first":   ("🎵", "Первая карточка",  "Собрать 1 карточку"),
-    "ten":     ("🎶", "Десятка",          "10 уникальных"),
-    "fifty":   ("💿", "Полтинник",        "50 уникальных"),
-    "half":    ("🏆", "Половина",         "50% коллекции"),
-    "full":    ("👑", "Коллекционер",     "100% коллекции"),
-    "c10":     ("⚪", "Обычный день",      "10 common"),
-    "r10":     ("🟢", "Редкий улов",       "10 rare"),
-    "e5":      ("🟣", "Эпик-ловец",        "5 epic"),
-    "l1":      ("🟠", "Легенда",           "1 legendary"),
-    "trade1":  ("🤝", "Первый обмен",      "Успешно обменяться"),
-    "fire7":   ("🔥", "Марафонец",         "7 дней подряд /open"),
-    "rich100": ("💎", "Богач",             "100 экземпляров"),
+ACH = {
+    "first": ("🎵", "Первая карточка", "Собрать 1"),
+    "ten": ("🎶", "Десятка", "10 уникальных"),
+    "fifty": ("💿", "Полтинник", "50 уникальных"),
+    "half": ("🏆", "Половина", "50%"),
+    "full": ("👑", "Коллекционер", "100%"),
+    "c10": ("⚪", "Обычный день", "10 common"),
+    "r10": ("🟢", "Редкий улов", "10 rare"),
+    "e5": ("🟣", "Эпик-ловец", "5 epic"),
+    "l1": ("🟠", "Легенда", "1 legendary"),
+    "trade1": ("🤝", "Первый обмен", "Обмен"),
+    "fire7": ("🔥", "Марафонец", "7 дней"),
+    "rich100": ("💎", "Богач", "100 шт"),
 }
-
 TITLES = {
-    "newbie":    ("🎤", "Новичок",      "Первая карточка"),
-    "meloman":   ("🎶", "Меломан",      "10 уникальных"),
-    "collector": ("💿", "Коллекционер", "25 уникальных"),
-    "master":    ("🏆", "Мастер",       "50 уникальных"),
-    "legend":    ("👑", "Легенда",      "Вся коллекция"),
-    "devoted":   ("🔥", "Преданный",    "Серия 7 дней"),
-    "trader":    ("🤝", "Торговец",     "5 обменов"),
-    "expert":    ("🎧", "Знаток",       "5+ в 4 жанрах"),
-    "rich":      ("💎", "Богач",        "100 экземпляров"),
-    "chosen":    ("🌟", "Избранный",    "5+ достижений"),
+    "newbie": ("🎤", "Новичок", "1 карточка"),
+    "meloman": ("🎶", "Меломан", "10"),
+    "collector": ("💿", "Коллекционер", "25"),
+    "master": ("🏆", "Мастер", "50"),
+    "legend": ("👑", "Легенда", "Все"),
+    "devoted": ("🔥", "Преданный", "7 дней"),
+    "trader": ("🤝", "Торговец", "5 обменов"),
+    "expert": ("🎧", "Знаток", "5+ в 4 жанрах"),
+    "rich": ("💎", "Богач", "100"),
+    "chosen": ("🌟", "Избранный", "5 достижений"),
 }
 TITLE_ORDER = ["chosen","legend","master","collector","meloman","devoted","trader","rich","expert","newbie"]
-
-DEMO_TRACKS = [
-    ('bad guy', 'Billie Eilish', 'When We All Fall Asleep, Where Do We Go?'),
-    ('Levitating', 'Dua Lipa', 'Future Nostalgia'),
-    ('Someone Like You', 'Adele', '21'),
-    ('Shake It Off', 'Taylor Swift', '1989'),
-    ('Umbrella', 'Rihanna', 'Good Girl Gone Bad'),
-    ('Poker Face', 'Lady Gaga', 'The Fame'),
-    ('Like a Prayer', 'Madonna', 'Like a Prayer'),
-    ('Blinding Lights', 'The Weeknd', 'After Hours'),
-    ('Shape of You', 'Ed Sheeran', '÷ (Divide)'),
-    ('Stronger', 'Kanye West', 'Graduation'),
-    ('Uptown Funk', 'Mark Ronson', 'Uptown Special'),
-    ('Lose Yourself', 'Eminem', '8 Mile (Soundtrack)'),
-    ('Imagine', 'John Lennon', 'Imagine'),
-    ('Purple Rain', 'Prince', 'Purple Rain'),
-    ('Thriller', 'Michael Jackson', 'Thriller'),
-    ('Believer', 'Imagine Dragons', 'Evolve'),
-    ('Take On Me', 'a-ha', 'Hunting High and Low'),
-    ('Creep', 'Radiohead', 'Pablo Honey'),
-    ('Группа крови', 'Кино', 'Группа крови'),
-    ('Smells Like Teen Spirit', 'Nirvana', 'Nevermind'),
-    ('Hotel California', 'Eagles', 'Hotel California'),
-    ('Wish You Were Here', 'Pink Floyd', 'Wish You Were Here'),
-    ('Bohemian Rhapsody', 'Queen', 'A Night at the Opera'),
-    ('Stairway to Heaven', 'Led Zeppelin', 'Led Zeppelin IV'),
+DEMO = [('bad guy','Billie Eilish','When We All Fall Asleep, Where Do We Go?'),('Levitating','Dua Lipa','Future Nostalgia'),('Someone Like You','Adele','21'),('Shape of You','Ed Sheeran','÷ (Divide)'),('Blinding Lights','The Weeknd','After Hours'),('Smells Like Teen Spirit','Nirvana','Nevermind')]
+QUESTS = [
+    ("open3","🎴","Открой 3 карточки",3,30,"card"),
+    ("qty5","🎁","Собери 5 экземпляров",5,25,None),
+    ("trade1","🤝","Соверши 1 обмен",1,50,None),
+    ("ach1","🏅","Получи достижение",1,25,None),
+    ("msg5","💬","Отправь 5 сообщений",5,20,None),
+    ("open5","🔥","Открой 5 карточек",5,60,"card"),
 ]
 
-QUEST_POOL = [
-    ("open3",  "🎴", "Открой 3 карточки",        3, 30, "card"),
-    ("qty5",   "🎁", "Собери 5 экземпляров",     5, 25, None),
-    ("trade1", "🤝", "Соверши 1 обмен",          1, 50, None),
-    ("ach1",   "🏅", "Получи новое достижение",  1, 25, None),
-    ("msg5",   "💬", "Отправь боту 5 сообщений", 5, 20, None),
-    ("open5",  "🔥", "Открой 5 карточек",        5, 60, "card"),
-]
-
-IMPORT_HELP = (
-    "🎧 <b>Импорт треков из Deezer</b>\n\n"
-    "<code>/spotify ссылка_на_артиста</code>\n"
-    "или <code>/spotify название артиста</code>\n\n"
-    "Ссылку бери на <b>deezer.com</b>: открой артиста → Поделиться → Копировать ссылку.\n\n"
-    "Бот импортирует <b>все треки</b> артиста с обложками, создаст его в разделе «🎤 Артисты» "
-    "и раскидает редкости автоматически."
-)
-
-ALBUM_HELP = (
-    "💿 <b>Управление треками</b>\n\n"
-    "<code>/addtrack Название | Артист | Альбом | редкость</code>\n"
-    "<code>/addalbum Артист | Альбом | редкость | трек1; трек2 [epic]</code> + фото\n"
-    "<code>/setcover Артист | Альбом</code> + фото\n"
-    "<code>/delalbum Артист | Альбом</code> · <code>/delcard ID</code> · <code>/clearcards</code>\n"
-    "<code>/setrarity ID редкость</code>\n\n"
-    "🎤 <b>Артисты:</b>\n"
-    "<code>/addartist Имя | описание</code> + фото\n"
-    "<code>/artists</code> · <code>/delartist ID</code> · <code>/setartistcover Имя</code> + фото\n\n"
-    "🎧 <b>Импорт:</b> <code>/spotify ссылка_с_deezer.com</code>\n\n"
-    "🎟 <b>Промокоды:</b>\n"
-    "<code>/addpromo КОД 5000 [кол-во]</code> · <code>/delpromo КОД</code> · <code>/promos</code>\n\n"
-    "📢 <b>Каналы:</b>\n"
-    "<code>/setchannel @канал</code> · <code>/setchannel2 @канал</code>\n"
-    "<code>/setchreward 2000</code> · <code>/setchreward2 1500</code>"
-)
-
-
-# ───────────────────────── Telegram API ─────────────────────────
-
-class TgError(Exception):
-    pass
-
+# ── Telegram API ──
+class TgErr(Exception): pass
 
 def tg(method, **params):
-    data = json.dumps(params, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(API + method, data=data, headers={"Content-Type": "application/json"})
-    timeout = int(params.get("timeout", 0)) + 30
+    data = json.dumps(params, ensure_ascii=False).encode()
+    req = urllib.request.Request(API + method, data=data, headers={"Content-Type":"application/json"})
+    t = int(params.get("timeout", 0)) + 30
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            res = json.loads(r.read())
+        with urllib.request.urlopen(req, timeout=t) as r: res = json.loads(r.read())
     except urllib.error.HTTPError as e:
-        try:
-            res = json.loads(e.read())
-        except Exception:
-            res = {"ok": False, "description": f"HTTP {e.code}"}
-    if not res.get("ok"):
-        raise TgError(res.get("description", "ошибка Telegram"))
+        try: res = json.loads(e.read())
+        except: res = {"ok": False, "description": f"HTTP {e.code}"}
+    if not res.get("ok"): raise TgErr(res.get("description", "tg error"))
     return res["result"]
 
+def btn(t, d): return {"text": t, "callback_data": d}
+def kb(rows): return {"inline_keyboard": rows}
 
-def btn(text, data):
-    return {"text": text, "callback_data": data}
-
-
-def kb(rows):
-    return {"inline_keyboard": rows}
-
-
-def send(chat_id, text, markup=None):
-    p = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
-    if markup:
-        p["reply_markup"] = markup
+def send(cid, text, markup=None):
+    p = {"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if markup: p["reply_markup"] = markup
     return tg("sendMessage", **p)
 
-
-def send_long(chat_id, lines, markup=None):
-    chunk, parts = "", []
-    for line in lines:
-        if len(chunk) + len(line) + 1 > 3800:
-            parts.append(chunk)
-            chunk = ""
-        chunk += line + "\n"
-    if chunk:
-        parts.append(chunk)
+def send_long(cid, lines, markup=None):
+    c = ""; parts = []
+    for l in lines:
+        if len(c) + len(l) + 1 > 3800: parts.append(c); c = ""
+        c += l + "\n"
+    if c: parts.append(c)
     for i, p in enumerate(parts):
-        last = i == len(parts) - 1
-        send(chat_id, p, markup if (last and markup) else None)
+        send(cid, p, markup if (i == len(parts)-1 and markup) else None)
 
+def send_media(cid, kind, fid, cap, markup=None):
+    m = {"photo":"sendPhoto","animation":"sendAnimation","video":"sendVideo"}.get(kind)
+    if fid and m:
+        p = {"chat_id":cid, kind:fid, "caption":cap[:1024], "parse_mode":"HTML"}
+        if markup: p["reply_markup"] = markup
+        try: return tg(m, **p)
+        except TgErr: say("media fail")
+    return send(cid, cap, markup)
 
-def send_media(chat_id, kind, file_id, caption, markup=None):
-    method = {"photo": "sendPhoto", "animation": "sendAnimation", "video": "sendVideo"}.get(kind)
-    if file_id and method:
-        p = {"chat_id": chat_id, kind: file_id, "caption": caption[:1024], "parse_mode": "HTML"}
-        if markup:
-            p["reply_markup"] = markup
-        try:
-            return tg(method, **p)
-        except TgError:
-            say("не удалось отправить медиа")
-    return send(chat_id, caption, markup)
-
-
-def answer_cb(cq_id, text=None, alert=False):
-    p = {"callback_query_id": cq_id}
-    if text:
-        p["text"] = text
-        p["show_alert"] = alert
-    try:
-        tg("answerCallbackQuery", **p)
-    except TgError:
-        pass
-
+def answer_cb(cqid, text=None, alert=False):
+    p = {"callback_query_id": cqid}
+    if text: p["text"] = text; p["show_alert"] = alert
+    try: tg("answerCallbackQuery", **p)
+    except TgErr: pass
 
 def edit_menu(cq, text, markup=None):
     msg = cq.get("message") or {}
-    chat_id, mid = msg.get("chat", {}).get("id"), msg.get("message_id")
-    if not chat_id or not mid:
-        return
-    is_media = any(k in msg for k in ("photo", "animation", "video", "document"))
+    cid, mid = msg.get("chat",{}).get("id"), msg.get("message_id")
+    if not cid or not mid: return
+    is_m = any(k in msg for k in ("photo","animation","video","document"))
     try:
-        if is_media:
-            tg("editMessageCaption", chat_id=chat_id, message_id=mid,
-               caption=text[:1024], parse_mode="HTML", reply_markup=markup or kb([]))
-        else:
-            tg("editMessageText", chat_id=chat_id, message_id=mid, text=text,
-               parse_mode="HTML", disable_web_page_preview=True, reply_markup=markup or kb([]))
-    except TgError:
-        pass
+        if is_m: tg("editMessageCaption", chat_id=cid, message_id=mid, caption=text[:1024], parse_mode="HTML", reply_markup=markup or kb([]))
+        else: tg("editMessageText", chat_id=cid, message_id=mid, text=text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=markup or kb([]))
+    except TgErr: pass
 
+def edit_text(cid, mid, text, markup=None):
+    try: tg("editMessageText", chat_id=cid, message_id=mid, text=text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=markup or kb([]))
+    except TgErr: pass
 
-def edit_text(chat_id, message_id, text, markup=None):
-    try:
-        tg("editMessageText", chat_id=chat_id, message_id=message_id, text=text,
-           parse_mode="HTML", disable_web_page_preview=True,
-           reply_markup=markup if markup else kb([]))
-    except TgError:
-        pass
+def clear_kb(cid, mid):
+    try: tg("editMessageReplyMarkup", chat_id=cid, message_id=mid, reply_markup=kb([]))
+    except TgErr: pass
 
-
-def clear_markup(chat_id, message_id):
-    try:
-        tg("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id, reply_markup=kb([]))
-    except TgError:
-        pass
-
-
-# ───────────────────────── БД ─────────────────────────
-
+# ── DB ──
 db = None
-
 
 def init_db():
     global db
@@ -328,2505 +195,1569 @@ def init_db():
             tmp = sqlite3.connect(DB_PATH)
             cols = [r[1] for r in tmp.execute("PRAGMA table_info(cards)")]
             tmp.close()
-        except sqlite3.Error:
-            cols = []
-        if cols and "title" not in cols:
-            os.replace(DB_PATH, DB_PATH + ".old_backup")
-            say(f"старая база → {DB_PATH}.old_backup")
+            if cols and "title" not in cols:
+                os.replace(DB_PATH, DB_PATH + ".old")
+                say("старая база → .old")
+        except: pass
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
     db.executescript("""
-        CREATE TABLE IF NOT EXISTS users(
-            user_id INTEGER PRIMARY KEY, username TEXT, name TEXT,
-            coins INTEGER NOT NULL DEFAULT 0, last_claim INTEGER NOT NULL DEFAULT 0,
-            equipped TEXT, joined INTEGER NOT NULL DEFAULT 0,
-            pity_leg INTEGER NOT NULL DEFAULT 0, pity_epic INTEGER NOT NULL DEFAULT 0,
-            open_streak INTEGER NOT NULL DEFAULT 0, last_open_day TEXT,
-            referred_by INTEGER, ref_count INTEGER NOT NULL DEFAULT 0, ref_earned INTEGER NOT NULL DEFAULT 0,
-            sub_tier TEXT, sub_until INTEGER NOT NULL DEFAULT 0,
-            xp INTEGER NOT NULL DEFAULT 0, title TEXT,
-            avatar_card INTEGER, warns INTEGER NOT NULL DEFAULT 0,
-            trades_ok INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS cards(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, artist TEXT NOT NULL,
-            album TEXT NOT NULL, rarity TEXT NOT NULL, image TEXT,
-            artist_id INTEGER,
-            UNIQUE(title, artist, album)
-        );
-        CREATE TABLE IF NOT EXISTS artists(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
-            image TEXT, description TEXT, spotify_id TEXT, created INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS inventory(
-            user_id INTEGER NOT NULL, card_id INTEGER NOT NULL, qty INTEGER NOT NULL,
-            PRIMARY KEY(user_id, card_id)
-        );
-        CREATE TABLE IF NOT EXISTS trades(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, from_id INTEGER NOT NULL, to_id INTEGER NOT NULL,
-            from_card INTEGER NOT NULL, to_card INTEGER NOT NULL, status TEXT NOT NULL, created INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS submissions(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT NOT NULL,
-            artist TEXT NOT NULL, album TEXT NOT NULL, image TEXT NOT NULL,
-            status TEXT NOT NULL, created INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS owned_cosmetics(
-            user_id INTEGER NOT NULL, item TEXT NOT NULL, PRIMARY KEY(user_id, item)
-        );
-        CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
-        CREATE TABLE IF NOT EXISTS referrals(
-            invited_id INTEGER PRIMARY KEY, referrer_id INTEGER NOT NULL,
-            rewarded INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS payments(
-            charge_id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, tier TEXT NOT NULL,
-            stars INTEGER NOT NULL, days INTEGER NOT NULL, created INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS channel_rewards(
-            user_id INTEGER PRIMARY KEY, claimed INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS channel2_rewards(
-            user_id INTEGER PRIMARY KEY, claimed INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS achievements(
-            user_id INTEGER NOT NULL, code TEXT NOT NULL, got INTEGER NOT NULL,
-            PRIMARY KEY(user_id, code)
-        );
-        CREATE TABLE IF NOT EXISTS quests(
-            user_id INTEGER NOT NULL, day TEXT NOT NULL, code TEXT NOT NULL,
-            progress INTEGER NOT NULL DEFAULT 0, target INTEGER NOT NULL,
-            xp INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY(user_id, day, code)
-        );
-        CREATE TABLE IF NOT EXISTS friends(
-            user_id INTEGER NOT NULL, friend_id INTEGER NOT NULL, status TEXT NOT NULL,
-            created INTEGER NOT NULL, PRIMARY KEY(user_id, friend_id)
-        );
-        CREATE TABLE IF NOT EXISTS promocodes(
-            code TEXT PRIMARY KEY,
-            reward INTEGER NOT NULL,
-            uses_left INTEGER NOT NULL DEFAULT -1,
-            created INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS promocode_uses(
-            user_id INTEGER NOT NULL, code TEXT NOT NULL, used_at INTEGER NOT NULL,
-            PRIMARY KEY(user_id, code)
-        );
+    CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY, username TEXT, name TEXT,
+      coins INTEGER DEFAULT 0, last_claim INTEGER DEFAULT 0, equipped TEXT, joined INTEGER DEFAULT 0,
+      pity_leg INTEGER DEFAULT 0, pity_epic INTEGER DEFAULT 0, open_streak INTEGER DEFAULT 0,
+      last_open_day TEXT, referred_by INTEGER, ref_count INTEGER DEFAULT 0, ref_earned INTEGER DEFAULT 0,
+      sub_tier TEXT, sub_until INTEGER DEFAULT 0, xp INTEGER DEFAULT 0, title TEXT,
+      avatar_card INTEGER, warns INTEGER DEFAULT 0, trades_ok INTEGER DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS cards(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
+      artist TEXT NOT NULL, album TEXT NOT NULL, rarity TEXT NOT NULL, image TEXT, artist_id INTEGER,
+      UNIQUE(title, artist, album));
+    CREATE TABLE IF NOT EXISTS artists(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE,
+      image TEXT, description TEXT, spotify_id TEXT, created INTEGER);
+    CREATE TABLE IF NOT EXISTS inventory(user_id INTEGER, card_id INTEGER, qty INTEGER,
+      PRIMARY KEY(user_id, card_id));
+    CREATE TABLE IF NOT EXISTS trades(id INTEGER PRIMARY KEY AUTOINCREMENT, from_id INTEGER, to_id INTEGER,
+      from_card INTEGER, to_card INTEGER, status TEXT, created INTEGER);
+    CREATE TABLE IF NOT EXISTS submissions(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+      title TEXT, artist TEXT, album TEXT, image TEXT, status TEXT, created INTEGER);
+    CREATE TABLE IF NOT EXISTS owned_cosmetics(user_id INTEGER, item TEXT, PRIMARY KEY(user_id, item));
+    CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE IF NOT EXISTS referrals(invited_id INTEGER PRIMARY KEY, referrer_id INTEGER,
+      rewarded INTEGER DEFAULT 0, created INTEGER);
+    CREATE TABLE IF NOT EXISTS payments(charge_id TEXT PRIMARY KEY, user_id INTEGER, tier TEXT,
+      stars INTEGER, days INTEGER, created INTEGER);
+    CREATE TABLE IF NOT EXISTS channel_rewards(user_id INTEGER PRIMARY KEY, claimed INTEGER DEFAULT 0, created INTEGER);
+    CREATE TABLE IF NOT EXISTS channel2_rewards(user_id INTEGER PRIMARY KEY, claimed INTEGER DEFAULT 0, created INTEGER);
+    CREATE TABLE IF NOT EXISTS achievements(user_id INTEGER, code TEXT, got INTEGER, PRIMARY KEY(user_id, code));
+    CREATE TABLE IF NOT EXISTS quests(user_id INTEGER, day TEXT, code TEXT, progress INTEGER DEFAULT 0,
+      target INTEGER, xp INTEGER DEFAULT 0, done INTEGER DEFAULT 0, PRIMARY KEY(user_id, day, code));
+    CREATE TABLE IF NOT EXISTS friends(user_id INTEGER, friend_id INTEGER, status TEXT, created INTEGER,
+      PRIMARY KEY(user_id, friend_id));
+    CREATE TABLE IF NOT EXISTS promocodes(code TEXT PRIMARY KEY, reward INTEGER,
+      uses_left INTEGER DEFAULT -1, created INTEGER);
+    CREATE TABLE IF NOT EXISTS promocode_uses(user_id INTEGER, code TEXT, used_at INTEGER,
+      PRIMARY KEY(user_id, code));
     """)
-    ensure_columns("users", {
-        "pity_leg": "INTEGER NOT NULL DEFAULT 0",
-        "pity_epic": "INTEGER NOT NULL DEFAULT 0",
-        "open_streak": "INTEGER NOT NULL DEFAULT 0",
-        "last_open_day": "TEXT",
-        "referred_by": "INTEGER",
-        "ref_count": "INTEGER NOT NULL DEFAULT 0",
-        "ref_earned": "INTEGER NOT NULL DEFAULT 0",
-        "sub_tier": "TEXT",
-        "sub_until": "INTEGER NOT NULL DEFAULT 0",
-        "xp": "INTEGER NOT NULL DEFAULT 0",
-        "title": "TEXT",
-        "avatar_card": "INTEGER",
-        "warns": "INTEGER NOT NULL DEFAULT 0",
-        "trades_ok": "INTEGER NOT NULL DEFAULT 0",
-    })
-    ensure_columns("cards", {"artist_id": "INTEGER"})
     db.execute("INSERT OR IGNORE INTO promocodes(code, reward, uses_left, created) VALUES(?,?,?,?)",
                ("PIZDEC", 20000, -1, int(time.time())))
     db.commit()
     purge_demo()
 
-
-def ensure_columns(table, cols):
+def ensure_cols(table, cols):
     have = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
-    for name, ddl in cols.items():
-        if name not in have:
-            db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    for n, ddl in cols.items():
+        if n not in have: db.execute(f"ALTER TABLE {table} ADD COLUMN {n} {ddl}")
     db.commit()
-
-
-def full_name(u):
-    name = " ".join(x for x in (u.get("first_name"), u.get("last_name")) if x)
-    return name or str(u["id"])
-
-
-def ensure_user(u):
-    db.execute(
-        "INSERT INTO users(user_id, username, name, joined) VALUES(?,?,?,?) "
-        "ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, name=excluded.name",
-        (u["id"], (u.get("username") or "").lower() or None, full_name(u), int(time.time())),
-    )
-    db.commit()
-
-
-def get_user(uid):
-    return db.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
-
-
-def get_setting(key):
-    r = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-    return r["value"] if r else None
-
-
-def set_setting(key, value):
-    if value is None:
-        db.execute("DELETE FROM settings WHERE key=?", (key,))
-    else:
-        db.execute("INSERT INTO settings(key, value) VALUES(?,?) "
-                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
-    db.commit()
-
 
 def purge_demo():
-    if get_setting("demo_purged"):
-        return
-    n = 0
-    for t, a, al in DEMO_TRACKS:
-        r = db.execute("SELECT id FROM cards WHERE title=? AND artist=? AND album=?", (t, a, al)).fetchone()
+    if get_setting("demo_purged"): return
+    for t, a, al in DEMO:
+        r = db.execute("SELECT id FROM cards WHERE title=? AND artist=? AND album=?", (t,a,al)).fetchone()
         if r:
             db.execute("DELETE FROM inventory WHERE card_id=?", (r["id"],))
             db.execute("DELETE FROM cards WHERE id=?", (r["id"],))
-            n += 1
+    db.commit(); set_setting("demo_purged", "1")
+
+def full_name(u):
+    n = " ".join(x for x in (u.get("first_name"), u.get("last_name")) if x)
+    return n or str(u["id"])
+
+def ensure_user(u):
+    db.execute("INSERT INTO users(user_id, username, name, joined) VALUES(?,?,?,?) "
+               "ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, name=excluded.name",
+               (u["id"], (u.get("username") or "").lower() or None, full_name(u), int(time.time())))
     db.commit()
-    set_setting("demo_purged", "1")
-    if n:
-        say(f"удалено демо-треков: {n}")
 
+def get_user(uid): return db.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
+def get_setting(k):
+    r = db.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone()
+    return r["value"] if r else None
 
-def add_card(user_id, card_id, delta):
+def set_setting(k, v):
+    if v is None: db.execute("DELETE FROM settings WHERE key=?", (k,))
+    else: db.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+    db.commit()
+
+def add_card(uid, cid, d):
     db.execute("INSERT INTO inventory(user_id, card_id, qty) VALUES(?,?,?) "
-               "ON CONFLICT(user_id, card_id) DO UPDATE SET qty = qty + ?",
-               (user_id, card_id, delta, delta))
-    db.execute("DELETE FROM inventory WHERE user_id=? AND card_id=? AND qty<=0", (user_id, card_id))
+               "ON CONFLICT(user_id, card_id) DO UPDATE SET qty=qty+?", (uid, cid, d, d))
+    db.execute("DELETE FROM inventory WHERE user_id=? AND card_id=? AND qty<=0", (uid, cid))
 
-
-def qty_of(user_id, card_id):
-    r = db.execute("SELECT qty FROM inventory WHERE user_id=? AND card_id=?", (user_id, card_id)).fetchone()
+def qty_of(uid, cid):
+    r = db.execute("SELECT qty FROM inventory WHERE user_id=? AND card_id=?", (uid, cid)).fetchone()
     return r["qty"] if r else 0
 
+def get_card(cid): return db.execute("SELECT * FROM cards WHERE id=?", (cid,)).fetchone()
+def get_artist(aid): return db.execute("SELECT * FROM artists WHERE id=?", (aid,)).fetchone()
+def find_artist(n): return db.execute("SELECT * FROM artists WHERE name=? COLLATE NOCASE", (n,)).fetchone()
 
-def get_card(card_id):
-    return db.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone()
-
-
-def get_artist(artist_id):
-    return db.execute("SELECT * FROM artists WHERE id=?", (artist_id,)).fetchone()
-
-
-def find_artist_by_name(name):
-    return db.execute("SELECT * FROM artists WHERE name=? COLLATE NOCASE", (name,)).fetchone()
-
-
-def ensure_artist(name, image=None, description=None, spotify_id=None):
-    a = find_artist_by_name(name)
+def ensure_artist(name, image=None, desc=None, spid=None):
+    a = find_artist(name)
     if a:
         if image and not a["image"]:
-            db.execute("UPDATE artists SET image=? WHERE id=?", (image, a["id"]))
-            db.commit()
+            db.execute("UPDATE artists SET image=? WHERE id=?", (image, a["id"])); db.commit()
         return a["id"]
-    cur = db.execute("INSERT INTO artists(name, image, description, spotify_id, created) "
-                     "VALUES(?,?,?,?,?)", (name[:80], image, description, spotify_id, int(time.time())))
-    db.commit()
-    return cur.lastrowid
-
+    cur = db.execute("INSERT INTO artists(name, image, description, spotify_id, created) VALUES(?,?,?,?,?)",
+                     (name[:80], image, desc, spid, int(time.time())))
+    db.commit(); return cur.lastrowid
 
 def title_of(c):
-    if not c:
-        return "<i>карточка удалена</i>"
+    if not c: return "<i>удалена</i>"
     return f"{RARITIES[c['rarity']][1]} <b>{esc(c['title'])}</b> — {esc(c['artist'])} <i>({esc(c['album'])})</i>"
 
+def badge(e): return COSMETICS[e][0] + " " if e in COSMETICS else ""
 
-def badge(equipped):
-    return COSMETICS[equipped][0] + " " if equipped in COSMETICS else ""
-
-
-def who_label(user_id):
-    u = get_user(user_id)
-    if not u:
-        return str(user_id)
+def who(uid):
+    u = get_user(uid)
+    if not u: return str(uid)
     return u["name"] + (f" (@{u['username']})" if u["username"] else "")
 
-
-def insert_card(title, artist, album, rarity, image, artist_id=None):
+def insert_card(t, a, al, r, img, aid=None):
     try:
-        cur = db.execute("INSERT INTO cards(title, artist, album, rarity, image, artist_id) "
-                         "VALUES(?,?,?,?,?,?)",
-                         (title[:80], artist[:80], album[:80], rarity, image, artist_id))
-        db.commit()
-        return cur.lastrowid
+        cur = db.execute("INSERT INTO cards(title,artist,album,rarity,image,artist_id) VALUES(?,?,?,?,?,?)",
+                         (t[:80], a[:80], al[:80], r, img, aid))
+        db.commit(); return cur.lastrowid
     except sqlite3.IntegrityError:
-        db.rollback()
-        return None
+        db.rollback(); return None
 
+def is_admin(uid): return uid in ADMIN_IDS
 
-def is_admin(uid):
-    return uid in ADMIN_IDS
+def fmt_wait(s):
+    s = max(0, int(s)); h, r = divmod(s, 3600); m = (r+59)//60
+    if m == 60: h, m = h+1, 0
+    return f"{h} ч {m} мин" if h else f"{m} мин"
 
-
-def fmt_wait(sec):
-    sec = max(0, int(sec))
-    h, rem = divmod(sec, 3600)
-    mnt = (rem + 59) // 60
-    if mnt == 60:
-        h, mnt = h + 1, 0
-    return f"{h} ч {mnt} мин" if h else f"{mnt} мин"
-
-
-def age_text(joined):
-    days = max(0, int((time.time() - joined) // 86400)) if joined else 0
-    y, rest = divmod(days, 365)
-    mo, d = divmod(rest, 30)
+def age_text(j):
+    d = max(0, int((time.time()-j)//86400)) if j else 0
+    y, r = divmod(d, 365); mo, dd = divmod(r, 30)
     parts = []
     if y: parts.append(f"{y} г.")
     if mo: parts.append(f"{mo} мес.")
-    if not parts: parts.append(f"{d} дн." if d else "меньше дня")
+    if not parts: parts.append(f"{dd} дн." if dd else "меньше дня")
     return " ".join(parts)
 
+def pct(a, b): return round(a*100/b) if b else 0
+def today(): return dt.datetime.utcnow().strftime("%Y-%m-%d")
+def add_xp(uid, n): db.execute("UPDATE users SET xp=xp+? WHERE user_id=?", (n, uid))
 
-def pct(a, b):
-    return round(a * 100 / b) if b else 0
-
-
-def today_str():
-    return dt.datetime.utcnow().strftime("%Y-%m-%d")
-
-
-def add_xp(uid, amount):
-    db.execute("UPDATE users SET xp = xp + ? WHERE user_id=?", (amount, uid))
-
-
-# ───────────────────────── Deezer ─────────────────────────
-
-DZ_API = "https://api.deezer.com/"
-
-
-class DeezerError(Exception):
-    def __init__(self, msg, code=None):
-        super().__init__(msg)
-        self.code = code
-
+# ── Deezer ──
+DZ = "https://api.deezer.com/"
+class DzErr(Exception):
+    def __init__(self, m, c=None): super().__init__(m); self.code = c
 
 def dz_get(path, **params):
-    url = DZ_API + path
-    if params:
-        url += "?" + urllib.parse.urlencode(params)
+    url = DZ + path + ("?" + urllib.parse.urlencode(params) if params else "")
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        raise DeezerError(f"HTTP {e.code}", e.code)
-    except urllib.error.URLError as e:
-        raise DeezerError(f"нет связи: {e.reason}")
+        with urllib.request.urlopen(req, timeout=30) as r: data = json.loads(r.read())
+    except urllib.error.HTTPError as e: raise DzErr(f"HTTP {e.code}", e.code)
+    except urllib.error.URLError as e: raise DzErr(f"нет связи: {e.reason}")
     if isinstance(data, dict) and data.get("error"):
-        err = data["error"]
-        raise DeezerError(err.get("message", "ошибка Deezer"), err.get("code"))
+        raise DzErr(data["error"].get("message", "ошибка"), data["error"].get("code"))
     return data
 
+def parse_ref(t):
+    m = re.search(r"deezer\.com/(?:[a-z]{2}/)?artist/(\d+)", t or "")
+    if m: return m.group(1)
+    m = re.search(r"^(\d+)$", (t or "").strip())
+    return m.group(1) if m else None
 
-def parse_artist_ref(text):
-    m = re.search(r"deezer\.com/(?:[a-z]{2}/)?artist/(\d+)", text or "")
-    if m:
-        return m.group(1)
-    m = re.search(r"^(\d+)$", (text or "").strip())
-    if m:
-        return m.group(1)
-    return None
-
-
-def deezer_collect(artist_id):
-    art = dz_get(f"artist/{artist_id}")
-    name = art.get("name") or "Unknown"
-    art_img = art.get("picture_xl") or art.get("picture_big")
-    albums, index = [], 0
-    while index < 1000:
-        res = dz_get(f"artist/{artist_id}/albums", limit=100, index=index)
-        items = res.get("data") or []
-        albums += items
-        if len(items) < 100:
-            break
-        index += 100
+def dz_collect(aid):
+    art = dz_get(f"artist/{aid}")
+    name = art.get("name") or "?"
+    img = art.get("picture_xl") or art.get("picture_big")
+    albums, idx = [], 0
+    while idx < 1000:
+        res = dz_get(f"artist/{aid}/albums", limit=100, index=idx)
+        items = res.get("data") or []; albums += items
+        if len(items) < 100: break
+        idx += 100
     tracks, seen = [], set()
     for al in albums:
-        album_name = al.get("title") or ""
-        img = al.get("cover_xl") or al.get("cover_big") or art_img
-        idx = 0
-        while idx < 500:
-            res = dz_get(f"album/{al['id']}/tracks", limit=100, index=idx)
+        an = al.get("title") or ""
+        im = al.get("cover_xl") or al.get("cover_big") or img
+        i = 0
+        while i < 500:
+            res = dz_get(f"album/{al['id']}/tracks", limit=100, index=i)
             items = res.get("data") or []
             for t in items:
-                title = (t.get("title") or "").strip()
-                key = title.lower()
-                if not key or key in seen:
-                    continue
-                contributors = t.get("contributors") or []
-                if contributors:
-                    ids = [str(c.get("id")) for c in contributors]
-                    if str(artist_id) not in ids:
-                        continue
-                seen.add(key)
-                tracks.append((title, album_name or title, img))
-            if len(items) < 100:
-                break
-            idx += 100
-    return name, art_img, tracks, len(albums)
+                ti = (t.get("title") or "").strip()
+                k = ti.lower()
+                if not k or k in seen: continue
+                cs = t.get("contributors") or []
+                if cs and str(aid) not in [str(c.get("id")) for c in cs]: continue
+                seen.add(k); tracks.append((ti, an or ti, im))
+            if len(items) < 100: break
+            i += 100
+    return name, img, tracks, len(albums)
 
-
-def assign_rarities(seed_key, titles):
-    order = sorted(titles, key=lambda t: hashlib.md5(f"{seed_key}|{t}".encode()).hexdigest())
+def assign_rar(seed, titles):
+    order = sorted(titles, key=lambda t: hashlib.md5(f"{seed}|{t}".encode()).hexdigest())
     n = len(order)
-    n_leg = max(1, round(n * RARITIES["legendary"][0] / 100)) if n else 0
-    n_epic = round(n * RARITIES["epic"][0] / 100)
-    n_rare = round(n * RARITIES["rare"][0] / 100)
+    nl = max(1, round(n * RARITIES["legendary"][0] / 100)) if n else 0
+    ne = round(n * RARITIES["epic"][0] / 100)
+    nr = round(n * RARITIES["rare"][0] / 100)
     out = {}
     for i, t in enumerate(order):
-        out[t] = ("legendary" if i < n_leg
-                  else "epic" if i < n_leg + n_epic
-                  else "rare" if i < n_leg + n_epic + n_rare
-                  else "common")
+        out[t] = ("legendary" if i < nl else "epic" if i < nl+ne else "rare" if i < nl+ne+nr else "common")
     return out
 
+def import_artist(aid):
+    name, img, tracks, na = dz_collect(aid)
+    dbid = ensure_artist(name, image=img)
+    rar = assign_rar(aid, [t[0] for t in tracks])
+    added = skipped = 0; stats = {r: 0 for r in RARITIES}
+    for t, al, im in tracks:
+        if insert_card(t, name, al, rar[t], im, dbid):
+            added += 1; stats[rar[t]] += 1
+        else: skipped += 1
+    return name, na, added, skipped, stats
 
-def import_artist(artist_id):
-    name, art_img, tracks, n_albums = deezer_collect(artist_id)
-    artist_db_id = ensure_artist(name, image=art_img)
-    rar = assign_rarities(artist_id, [t[0] for t in tracks])
-    added = skipped = 0
-    stats = {r: 0 for r in RARITIES}
-    for title, album, img in tracks:
-        if insert_card(title, name, album, rar[title], img, artist_db_id):
-            added += 1
-            stats[rar[title]] += 1
-        else:
-            skipped += 1
-    return name, n_albums, added, skipped, stats
-
+IMPORT_HELP = ("🎧 <b>Импорт Deezer</b>\n\n"
+               "<code>/spotify ссылка_с_deezer.com</code>\n"
+               "или <code>/spotify имя артиста</code>")
 
 def cmd_spotify(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
     q = args.strip()
-    if not q:
-        send(chat_id, IMPORT_HELP)
-        return
-    ref = parse_artist_ref(q)
+    if not q: send(cid, IMPORT_HELP); return
+    ref = parse_ref(q)
     if ref:
-        send(chat_id, "⏳ Импортирую… (может занять до минуты)")
-        try:
-            name, n_albums, added, skipped, stats = import_artist(ref)
-        except DeezerError as e:
-            send(chat_id, f"⚠️ Deezer: {esc(str(e))}")
-            return
-        lines = [
-            f"✅ <b>{esc(name)}</b>: добавлено {added} треков из {n_albums} релизов"
-            + (f" (уже были: {skipped})" if skipped else ""),
-            " · ".join(f"{RARITIES[k][1]} {v}" for k, v in stats.items() if v),
-        ]
-        send(chat_id, "\n".join(lines))
+        send(cid, "⏳ Импортирую…")
+        try: name, na, added, skipped, stats = import_artist(ref)
+        except DzErr as e: send(cid, f"⚠️ {esc(str(e))}"); return
+        send(cid, f"✅ <b>{esc(name)}</b>: {added} из {na} релизов\n"
+                  + " · ".join(f"{RARITIES[k][1]}{v}" for k, v in stats.items() if v))
         return
-    try:
-        res = dz_get("search/artist", q=q, limit=8)
-    except DeezerError as e:
-        send(chat_id, f"⚠️ Deezer: {esc(str(e))}")
-        return
+    try: res = dz_get("search/artist", q=q, limit=8)
+    except DzErr as e: send(cid, f"⚠️ {esc(str(e))}"); return
     items = res.get("data") or []
-    if not items:
-        send(chat_id, "Ничего не нашёл. Пришли ссылку с deezer.com")
-        return
-    rows = []
-    for a in items[:8]:
-        label = f"{a['name']} · {a.get('nb_album', '?')} альб."
-        rows.append([btn(label[:60], f"dza:{a['id']}")])
-    send(chat_id, "Найдено. Выбери артиста:", kb(rows))
-
+    if not items: send(cid, "Не нашёл."); return
+    rows = [[btn(f"{a['name'][:40]} · {a.get('nb_album','?')}", f"dza:{a['id']}")] for a in items[:8]]
+    send(cid, "Выбери:", kb(rows))
 
 def cb_deezer(cq, parts):
-    msg = cq.get("message") or {}
-    chat_id = msg.get("chat", {}).get("id", cq["from"]["id"])
+    cid = (cq.get("message") or {}).get("chat",{}).get("id", cq["from"]["id"])
     if parts[0] == "dza" and len(parts) == 2:
-        answer_cb(cq["id"], "Импортирую…")
-        edit_menu(cq, "⏳ Импортирую треки из Deezer…")
-        try:
-            name, n_albums, added, skipped, stats = import_artist(parts[1])
-        except DeezerError as e:
-            send(chat_id, f"⚠️ Deezer: {esc(str(e))}")
-            return
-        lines = [
-            f"✅ <b>{esc(name)}</b>: добавлено {added} треков из {n_albums} релизов"
-            + (f" (уже были: {skipped})" if skipped else ""),
-            " · ".join(f"{RARITIES[k][1]} {v}" for k, v in stats.items() if v),
-        ]
-        send(chat_id, "\n".join(lines))
+        answer_cb(cq["id"], "Импортирую…"); edit_menu(cq, "⏳ Импорт…")
+        try: name, na, added, skipped, stats = import_artist(parts[1])
+        except DzErr as e: send(cid, f"⚠️ {esc(str(e))}"); return
+        send(cid, f"✅ <b>{esc(name)}</b>: {added} из {na}\n" + " · ".join(f"{RARITIES[k][1]}{v}" for k,v in stats.items() if v))
 
-
-# ───────────────────────── АРТИСТЫ ─────────────────────────
-
+# ── АРТИСТЫ ──
 def artist_text(a):
     lines = [f"🎤 <b>{esc(a['name'])}</b>", ""]
-    if a["description"]:
-        lines.append(esc(a["description"]))
-        lines.append("")
-    total = db.execute("SELECT COUNT(*) FROM cards WHERE artist_id=?", (a["id"],)).fetchone()[0]
+    if a["description"]: lines += [esc(a["description"]), ""]
+    t = db.execute("SELECT COUNT(*) FROM cards WHERE artist_id=?", (a["id"],)).fetchone()[0]
     by_r = {}
     for r in db.execute("SELECT rarity, COUNT(*) n FROM cards WHERE artist_id=? GROUP BY rarity", (a["id"],)):
         by_r[r["rarity"]] = r["n"]
-    lines.append(f"🎵 Треков: <b>{total}</b>")
+    lines.append(f"🎵 Треков: <b>{t}</b>")
     for k, v in RARITIES.items():
-        if by_r.get(k):
-            lines.append(f"{v[1]} {v[3]}: {by_r[k]}")
+        if by_r.get(k): lines.append(f"{v[1]} {v[3]}: {by_r[k]}")
     return "\n".join(lines)
 
+def photo_of(m):
+    if m.get("photo"): return m["photo"][-1]["file_id"]
+    rp = m.get("reply_to_message") or {}
+    if rp.get("photo"): return rp["photo"][-1]["file_id"]
+    return None
 
 def cmd_addartist(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
     p = [x.strip() for x in args.split("|", 1)]
-    if not p or not p[0]:
-        send(chat_id, "Формат: <code>/addartist Имя | описание</code> (можно с фото)")
-        return
-    name = p[0][:80]
-    desc = p[1][:400] if len(p) > 1 else None
-    image = photo_id_of(m)
-    a = find_artist_by_name(name)
+    if not p or not p[0]: send(cid, "Формат: <code>/addartist Имя | описание</code>"); return
+    name = p[0][:80]; desc = p[1][:400] if len(p) > 1 else None
+    img = photo_of(m); a = find_artist(name)
     if a:
-        db.execute("UPDATE artists SET description=COALESCE(?, description), image=COALESCE(?, image) WHERE id=?",
-                   (desc, image, a["id"]))
-        db.commit()
-        send(chat_id, f"✅ Артист обновлён: #{a['id']} {esc(name)}")
-        return
-    aid = ensure_artist(name, image=image, description=desc)
-    send(chat_id, f"✅ Артист добавлен: #{aid} {esc(name)}")
-
+        db.execute("UPDATE artists SET description=COALESCE(?,description), image=COALESCE(?,image) WHERE id=?", (desc, img, a["id"]))
+        db.commit(); send(cid, f"✅ Обновлён: #{a['id']} {esc(name)}"); return
+    aid = ensure_artist(name, image=img, desc=desc)
+    send(cid, f"✅ Добавлен: #{aid} {esc(name)}")
 
 def cmd_artists(m, args):
-    chat_id = m["chat"]["id"]
-    rows = db.execute(
-        "SELECT a.id, a.name, (SELECT COUNT(*) FROM cards c WHERE c.artist_id=a.id) AS n "
-        "FROM artists a ORDER BY a.name"
-    ).fetchall()
-    if not rows:
-        send(chat_id, "Пока нет артистов. Добавь: <code>/addartist Имя</code> или <code>/spotify ссылка</code>")
-        return
-    buttons = [btn(f"{r['name'][:30]} · {r['n']}", f"ar:{r['id']}") for r in rows]
-    rows_kb = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    send(chat_id, f"🎤 <b>Артисты ({len(rows)})</b>\n👇 Нажми на артиста", kb(rows_kb))
+    cid = m["chat"]["id"]
+    rows = db.execute("SELECT a.id, a.name, (SELECT COUNT(*) FROM cards c WHERE c.artist_id=a.id) n FROM artists a ORDER BY a.name").fetchall()
+    if not rows: send(cid, "Нет артистов. /addartist или /spotify"); return
+    bs = [btn(f"{r['name'][:30]} · {r['n']}", f"ar:{r['id']}") for r in rows]
+    send(cid, f"🎤 <b>Артисты ({len(rows)})</b>", kb([bs[i:i+2] for i in range(0, len(bs), 2)]))
 
-
-def cb_artist(cq, artist_id):
-    a = get_artist(artist_id)
-    msg = cq.get("message") or {}
-    chat_id = msg.get("chat", {}).get("id", cq["from"]["id"])
-    if not a:
-        answer_cb(cq["id"], "Артист не найден.", True)
-        return
-    text = artist_text(a)
-    markup = kb([[btn("◀ К артистам", "ar:list")]])
-    if a["image"]:
-        send_media(chat_id, "photo", a["image"], text, markup)
-    else:
-        send(chat_id, text, markup)
+def cb_artist(cq, aid):
+    a = get_artist(aid)
+    cid = (cq.get("message") or {}).get("chat",{}).get("id", cq["from"]["id"])
+    if not a: answer_cb(cq["id"], "Нет.", True); return
+    markup = kb([[btn("◀ Артисты", "ar:list")]])
+    if a["image"]: send_media(cid, "photo", a["image"], artist_text(a), markup)
+    else: send(cid, artist_text(a), markup)
     answer_cb(cq["id"])
-
 
 def cb_artists_list(cq):
-    msg = cq.get("message") or {}
-    chat_id = msg.get("chat", {}).get("id", cq["from"]["id"])
-    rows = db.execute(
-        "SELECT a.id, a.name, (SELECT COUNT(*) FROM cards c WHERE c.artist_id=a.id) AS n "
-        "FROM artists a ORDER BY a.name"
-    ).fetchall()
-    if not rows:
-        send(chat_id, "Пока нет артистов.")
-        answer_cb(cq["id"])
-        return
-    buttons = [btn(f"{r['name'][:30]} · {r['n']}", f"ar:{r['id']}") for r in rows]
-    rows_kb = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    edit_menu(cq, f"🎤 <b>Артисты ({len(rows)})</b>", kb(rows_kb))
+    cid = (cq.get("message") or {}).get("chat",{}).get("id", cq["from"]["id"])
+    rows = db.execute("SELECT a.id, a.name, (SELECT COUNT(*) FROM cards c WHERE c.artist_id=a.id) n FROM artists a ORDER BY a.name").fetchall()
+    if not rows: send(cid, "Пусто"); answer_cb(cq["id"]); return
+    bs = [btn(f"{r['name'][:30]} · {r['n']}", f"ar:{r['id']}") for r in rows]
+    edit_menu(cq, f"🎤 <b>Артисты ({len(rows)})</b>", kb([bs[i:i+2] for i in range(0, len(bs), 2)]))
     answer_cb(cq["id"])
 
-
 def cmd_delartist(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
-    if not args.strip().isdigit():
-        send(chat_id, "Формат: <code>/delartist ID</code>")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
+    if not args.strip().isdigit(): send(cid, "/delartist ID"); return
     a = get_artist(int(args.strip()))
-    if not a:
-        send(chat_id, "Артист не найден.")
-        return
+    if not a: send(cid, "Нет."); return
     ids = [r["id"] for r in db.execute("SELECT id FROM cards WHERE artist_id=?", (a["id"],))]
-    for cid in ids:
-        db.execute("DELETE FROM inventory WHERE card_id=?", (cid,))
-        db.execute("DELETE FROM cards WHERE id=?", (cid,))
-    db.execute("DELETE FROM artists WHERE id=?", (a["id"],))
-    db.commit()
-    send(chat_id, f"🗑 Артист удалён: {esc(a['name'])} и {len(ids)} его треков.")
-
+    for c in ids:
+        db.execute("DELETE FROM inventory WHERE card_id=?", (c,))
+        db.execute("DELETE FROM cards WHERE id=?", (c,))
+    db.execute("DELETE FROM artists WHERE id=?", (a["id"],)); db.commit()
+    send(cid, f"🗑 {esc(a['name'])} и {len(ids)} треков")
 
 def cmd_setartistcover(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
-    name = args.strip()
-    image = photo_id_of(m)
-    if not name or not image:
-        send(chat_id, "Формат: фото с подписью <code>/setartistcover Имя</code>")
-        return
-    a = find_artist_by_name(name)
-    if not a:
-        send(chat_id, "Артист не найден.")
-        return
-    db.execute("UPDATE artists SET image=? WHERE id=?", (image, a["id"]))
-    db.commit()
-    send(chat_id, f"🖼 Обложка обновлена: {esc(a['name'])}")
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
+    name = args.strip(); img = photo_of(m)
+    if not name or not img: send(cid, "Формат: фото с <code>/setartistcover Имя</code>"); return
+    a = find_artist(name)
+    if not a: send(cid, "Не найден."); return
+    db.execute("UPDATE artists SET image=? WHERE id=?", (img, a["id"])); db.commit()
+    send(cid, f"🖼 {esc(a['name'])}")
 
-
-# ───────────────────────── ПРОМОКОДЫ ─────────────────────────
-
+# ── ПРОМОКОДЫ ──
 def cmd_promo(m, args):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
+    uid, cid = m["from"]["id"], m["chat"]["id"]
     code = (args or "").strip().upper()
-    if not code:
-        send(chat_id, "🎟 Введи код: <code>/promo КОД</code>")
-        return
+    if not code: send(cid, "🎟 /promo КОД"); return
     p = db.execute("SELECT * FROM promocodes WHERE code=?", (code,)).fetchone()
-    if not p:
-        send(chat_id, "❌ Такого промокода нет.")
-        return
-    if p["uses_left"] == 0:
-        send(chat_id, "❌ Промокод исчерпан.")
-        return
-    used = db.execute("SELECT 1 FROM promocode_uses WHERE user_id=? AND code=?",
-                      (uid, code)).fetchone()
-    if used:
-        send(chat_id, "❌ Ты уже использовал этот промокод.")
-        return
-    db.execute("UPDATE users SET coins = coins + ? WHERE user_id=?", (p["reward"], uid))
-    db.execute("INSERT INTO promocode_uses(user_id, code, used_at) VALUES(?,?,?)",
-               (uid, code, int(time.time())))
-    if p["uses_left"] > 0:
-        db.execute("UPDATE promocodes SET uses_left = uses_left - 1 WHERE code=?", (code,))
+    if not p: send(cid, "❌ Нет такого."); return
+    if p["uses_left"] == 0: send(cid, "❌ Исчерпан."); return
+    if db.execute("SELECT 1 FROM promocode_uses WHERE user_id=? AND code=?", (uid, code)).fetchone():
+        send(cid, "❌ Уже использовал."); return
+    db.execute("UPDATE users SET coins=coins+? WHERE user_id=?", (p["reward"], uid))
+    db.execute("INSERT INTO promocode_uses(user_id,code,used_at) VALUES(?,?,?)", (uid, code, int(time.time())))
+    if p["uses_left"] > 0: db.execute("UPDATE promocodes SET uses_left=uses_left-1 WHERE code=?", (code,))
     db.commit()
-    new_balance = db.execute("SELECT coins FROM users WHERE user_id=?", (uid,)).fetchone()[0]
-    send(chat_id, f"🎟 <b>Промокод активирован!</b>\n\n💰 +{p['reward']} монет\n"
-                  f"Баланс: <b>{new_balance}</b>")
-
+    bal = db.execute("SELECT coins FROM users WHERE user_id=?", (uid,)).fetchone()[0]
+    send(cid, f"🎟 <b>Активирован!</b>\n💰 +{p['reward']}\nБаланс: <b>{bal}</b>")
 
 def cmd_addpromo(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
-    parts = args.split()
-    if len(parts) < 2 or not parts[1].isdigit():
-        send(chat_id, "Формат: <code>/addpromo КОД 5000 [кол-во_активаций]</code>")
-        return
-    code = parts[0].strip().upper()
-    reward = int(parts[1])
-    uses = int(parts[2]) if len(parts) > 2 and parts[2].lstrip("-").isdigit() else -1
-    db.execute("INSERT INTO promocodes(code, reward, uses_left, created) VALUES(?,?,?,?) "
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
+    p = args.split()
+    if len(p) < 2 or not p[1].isdigit(): send(cid, "/addpromo КОД 5000 [кол]"); return
+    code = p[0].strip().upper(); rw = int(p[1])
+    uses = int(p[2]) if len(p) > 2 and p[2].lstrip("-").isdigit() else -1
+    db.execute("INSERT INTO promocodes(code,reward,uses_left,created) VALUES(?,?,?,?) "
                "ON CONFLICT(code) DO UPDATE SET reward=excluded.reward, uses_left=excluded.uses_left",
-               (code, reward, uses, int(time.time())))
+               (code, rw, uses, int(time.time())))
     db.commit()
-    limit = "∞" if uses < 0 else str(uses)
-    send(chat_id, f"✅ Промокод <code>{code}</code>: +{reward} монет, активаций: {limit}")
-
+    send(cid, f"✅ {code}: +{rw}, активаций: {'∞' if uses < 0 else uses}")
 
 def cmd_delpromo(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
     code = (args or "").strip().upper()
-    if not code:
-        send(chat_id, "Формат: <code>/delpromo КОД</code>")
-        return
-    cur = db.execute("DELETE FROM promocodes WHERE code=?", (code,))
-    db.commit()
-    if cur.rowcount:
-        send(chat_id, f"🗑 Промокод <code>{code}</code> удалён.")
-    else:
-        send(chat_id, "Не найден.")
-
+    if not code: send(cid, "/delpromo КОД"); return
+    r = db.execute("DELETE FROM promocodes WHERE code=?", (code,)); db.commit()
+    send(cid, f"🗑 {code}" if r.rowcount else "Не найден.")
 
 def cmd_promos(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
     rows = db.execute("SELECT * FROM promocodes ORDER BY created DESC").fetchall()
-    if not rows:
-        send(chat_id, "Промокодов нет.")
-        return
+    if not rows: send(cid, "Пусто"); return
     lines = ["🎟 <b>Промокоды</b>\n"]
     for r in rows:
-        used = db.execute("SELECT COUNT(*) FROM promocode_uses WHERE code=?",
-                          (r["code"],)).fetchone()[0]
-        lines.append(f"<code>{esc(r['code'])}</code> — +{r['reward']} монет · активаций: {used}"
+        used = db.execute("SELECT COUNT(*) FROM promocode_uses WHERE code=?", (r["code"],)).fetchone()[0]
+        lines.append(f"<code>{esc(r['code'])}</code> +{r['reward']} · использован: {used}"
                      + ("" if r["uses_left"] < 0 else f" · осталось: {r['uses_left']}"))
-    send_long(chat_id, lines)
+    send_long(cid, lines)
 
+# ── РЕФЕРАЛЫ ──
+def ref_link(uid): return f"https://t.me/{BOT_USERNAME}?start=ref_{uid}"
 
-# ───────────────────────── РЕФЕРАЛЫ ─────────────────────────
-
-def referral_link(uid):
-    return f"https://t.me/{BOT_USERNAME}?start=ref_{uid}"
-
-
-def process_referral(new_uid, ref_arg):
-    if not ref_arg or not ref_arg.startswith("ref_"):
-        return False, None
-    try:
-        referrer_id = int(ref_arg[4:])
-    except ValueError:
-        return False, None
-    if referrer_id == new_uid:
-        return False, None
-    if db.execute("SELECT 1 FROM referrals WHERE invited_id=?", (new_uid,)).fetchone():
-        return False, None
-    ref_u = get_user(referrer_id)
-    if not ref_u:
-        return False, None
-    db.execute("INSERT INTO referrals(invited_id, referrer_id, rewarded, created) VALUES(?,?,?,?)",
-               (new_uid, referrer_id, REFERRAL_BONUS, int(time.time())))
-    db.execute("UPDATE users SET coins = coins + ?, ref_count = ref_count + 1, "
-               "ref_earned = ref_earned + ? WHERE user_id=?",
-               (REFERRAL_BONUS, REFERRAL_BONUS, referrer_id))
-    db.execute("UPDATE users SET referred_by=? WHERE user_id=?", (referrer_id, new_uid))
-    db.commit()
-    return True, referrer_id
-
+def process_ref(new_uid, arg):
+    if not arg or not arg.startswith("ref_"): return False, None
+    try: rid = int(arg[4:])
+    except ValueError: return False, None
+    if rid == new_uid: return False, None
+    if db.execute("SELECT 1 FROM referrals WHERE invited_id=?", (new_uid,)).fetchone(): return False, None
+    if not get_user(rid): return False, None
+    db.execute("INSERT INTO referrals(invited_id,referrer_id,rewarded,created) VALUES(?,?,?,?)",
+               (new_uid, rid, REF_BONUS, int(time.time())))
+    db.execute("UPDATE users SET coins=coins+?, ref_count=ref_count+1, ref_earned=ref_earned+? WHERE user_id=?",
+               (REF_BONUS, REF_BONUS, rid))
+    db.execute("UPDATE users SET referred_by=? WHERE user_id=?", (rid, new_uid))
+    db.commit(); return True, rid
 
 def cmd_ref(m, args):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
-    u = get_user(uid)
-    link = referral_link(uid)
+    uid, cid = m["from"]["id"], m["chat"]["id"]
+    u = get_user(uid); link = ref_link(uid)
     invited = db.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=?", (uid,)).fetchone()[0]
-    earned = u["ref_earned"] or 0
-    lines = [
-        "🎁 <b>Рефералы</b>", "",
-        f"За каждого друга по твоей ссылке — <b>+{REFERRAL_BONUS}</b> монет.",
-        "", f"👥 Приглашено: <b>{invited}</b>",
-        f"💰 Заработано: <b>{earned}</b>", "",
-        "Твоя ссылка:", f"<code>{link}</code>",
-    ]
-    share_text = quote("Заходи в музыкальные карточки 🎧")
+    lines = ["🎁 <b>Рефералы</b>", "",
+             f"За друга — <b>+{REF_BONUS}</b> монет", "",
+             f"👥 Приглашено: <b>{invited}</b>",
+             f"💰 Заработано: <b>{u['ref_earned'] or 0}</b>", "",
+             "Твоя ссылка:", f"<code>{link}</code>"]
+    st = quote("Заходи 🎧")
     markup = kb([
-        [{"text": "📤 Поделиться", "url": f"https://t.me/share/url?url={quote(link)}&text={share_text}"}],
-        [btn("🔄 Обновить", "ref:refresh")],
-    ])
-    send(chat_id, "\n".join(lines), markup)
+        [{"text": "📤 Поделиться", "url": f"https://t.me/share/url?url={quote(link)}&text={st}"}],
+        [btn("🔄 Обновить", "ref:refresh")]])
+    send(cid, "\n".join(lines), markup)
 
+# ── STARS + МЕГА ──
+def is_sub(u): return bool(u and u["sub_until"] and u["sub_until"] > time.time())
 
-# ───────────────────────── ПОДПИСКИ STARS + МЕГА-ДОНАТ ─────────────────────────
+def sub_mult(u):
+    if not is_sub(u): return 1.0
+    return SUB_P_MULT if u["sub_tier"] == "premium" else SUB_B_MULT
 
-def is_subscribed(u):
-    return bool(u and u["sub_until"] and u["sub_until"] > time.time())
-
-
-def sub_multiplier(u):
-    if not is_subscribed(u):
-        return 1.0
-    return SUB_PREMIUM_MULT if u["sub_tier"] == "premium" else SUB_BASIC_MULT
-
-
-def sub_tier_label(tier):
-    if tier == "premium":
-        return f"💎 Premium ×{SUB_PREMIUM_MULT}"
-    if tier == "basic":
-        return f"💚 Basic ×{SUB_BASIC_MULT}"
+def sub_label(t):
+    if t == "premium": return f"💎 Premium ×{SUB_P_MULT}"
+    if t == "basic": return f"💚 Basic ×{SUB_B_MULT}"
     return "—"
-
 
 def subscribe_text(uid):
     u = get_user(uid)
     lines = ["⭐ <b>Подписки и донаты</b>", ""]
-    if is_subscribed(u):
+    if is_sub(u):
         until = dt.datetime.fromtimestamp(u["sub_until"]).strftime("%d.%m.%Y")
-        lines.append(f"🟢 Активна: <b>{sub_tier_label(u['sub_tier'])}</b> до {until}\n")
-    lines.append(f"💚 <b>Basic</b> — {SUB_BASIC_STARS}⭐ / {SUB_DAYS} дней")
-    lines.append(f"   Множитель: <b>×{SUB_BASIC_MULT}</b>\n")
-    lines.append(f"💎 <b>Premium</b> — {SUB_PREMIUM_STARS}⭐ / {SUB_DAYS} дней")
-    lines.append(f"   Множитель: <b>×{SUB_PREMIUM_MULT}</b>\n")
-    lines.append("💥 <b>МЕЕЕЕГАСУПЕРАКЦИИИЯ!!!!!!!</b>")
-    lines.append(f"   <b>{MEGA_COINS}</b> монет за <b>{MEGA_STARS}</b>⭐ — разово и сразу! 🐶🔥")
-    lines.append("")
-    lines.append("Множитель применяется к монетам за сбор. МЕГА-пакет — разовая покупка монет.")
+        lines.append(f"🟢 Активна: <b>{sub_label(u['sub_tier'])}</b> до {until}\n")
+    lines += [f"💚 <b>Basic</b> — {SUB_B_STARS}⭐ / {SUB_DAYS}д · ×{SUB_B_MULT}",
+              f"💎 <b>Premium</b> — {SUB_P_STARS}⭐ / {SUB_DAYS}д · ×{SUB_P_MULT}",
+              "",
+              f"💥 <b>МЕЕЕЕГАСУПЕРАКЦИИИЯ!!!!!!!</b>",
+              f"   <b>{MEGA_COINS}</b> монет за <b>{MEGA_STARS}</b>⭐ — сразу! 🐶🔥"]
     return "\n".join(lines)
 
+def sub_kb():
+    return kb([
+        [btn(f"💚 Basic · {SUB_B_STARS}⭐", "sub:buy:basic")],
+        [btn(f"💎 Premium · {SUB_P_STARS}⭐", "sub:buy:premium")],
+        [btn(f"💥 МЕЕЕЕГАСУПЕРАКЦИИИЯ!!!!!!! · {MEGA_STARS}⭐", "sub:buy:mega")]])
 
 def cmd_subscribe(m, args):
-    chat_id, uid = m["chat"]["id"], m["from"]["id"]
-    markup = kb([
-        [btn(f"💚 Basic · {SUB_BASIC_STARS}⭐", "sub:buy:basic")],
-        [btn(f"💎 Premium · {SUB_PREMIUM_STARS}⭐", "sub:buy:premium")],
-        [btn(f"💥 МЕЕЕЕГАСУПЕРАКЦИИИЯ!!!!!!! · {MEGA_STARS}⭐", "sub:buy:mega")],
-    ])
-    send(chat_id, subscribe_text(uid), markup)
+    cid, uid = m["chat"]["id"], m["from"]["id"]
+    send(cid, subscribe_text(uid), sub_kb())
 
-
-def send_stars_invoice(chat_id, uid, tier):
+def send_invoice(cid, uid, tier):
     if tier == "basic":
-        stars, title = SUB_BASIC_STARS, f"Basic ×{SUB_BASIC_MULT}"
-        desc = f"Множитель монет ×{SUB_BASIC_MULT} на {SUB_DAYS} дней"
+        stars, title = SUB_B_STARS, f"Basic ×{SUB_B_MULT}"
+        desc = f"Множитель ×{SUB_B_MULT} на {SUB_DAYS}д"
     elif tier == "premium":
-        stars, title = SUB_PREMIUM_STARS, f"Premium ×{SUB_PREMIUM_MULT}"
-        desc = f"Множитель монет ×{SUB_PREMIUM_MULT} на {SUB_DAYS} дней"
+        stars, title = SUB_P_STARS, f"Premium ×{SUB_P_MULT}"
+        desc = f"Множитель ×{SUB_P_MULT} на {SUB_DAYS}д"
     elif tier == "mega":
-        stars = MEGA_STARS
-        title = f"💥 МЕГАСУПЕРАКЦИЯ · {MEGA_COINS} монет"
-        desc = f"{MEGA_COINS} монет сразу в кошелёк! 🐶🔥 Охае, даттебаё, сабака кракена!"
-    else:
-        send(chat_id, "Неизвестный тариф.")
-        return
+        stars, title = MEGA_STARS, f"💥 МЕГА · {MEGA_COINS} монет"
+        desc = f"{MEGA_COINS} монет сразу! 🐶🔥"
+    else: send(cid, "?"); return
     payload = f"sub|{tier}|{uid}|{int(time.time())}"
-    try:
-        tg("sendInvoice", chat_id=chat_id, title=title, description=desc,
-           payload=payload, currency="XTR",
-           prices=[{"label": title, "amount": stars}])
-    except TgError as e:
-        say(f"sendInvoice fail: {e}")
-        send(chat_id, "Не удалось создать счёт.")
+    try: tg("sendInvoice", chat_id=cid, title=title, description=desc, payload=payload,
+            currency="XTR", prices=[{"label": title, "amount": stars}])
+    except TgErr as e: say(f"sendInvoice: {e}"); send(cid, "Ошибка счёта")
 
-
-def cb_subscribe(cq, action):
+def cb_sub(cq, action):
     uid = cq["from"]["id"]
-    chat_id = (cq.get("message") or {}).get("chat", {}).get("id", uid)
+    cid = (cq.get("message") or {}).get("chat",{}).get("id", uid)
     if action == "menu":
-        markup = kb([
-            [btn(f"💚 Basic · {SUB_BASIC_STARS}⭐", "sub:buy:basic")],
-            [btn(f"💎 Premium · {SUB_PREMIUM_STARS}⭐", "sub:buy:premium")],
-            [btn(f"💥 МЕЕЕЕГАСУПЕРАКЦИИИЯ!!!!!!! · {MEGA_STARS}⭐", "sub:buy:mega")],
-        ])
-        edit_menu(cq, subscribe_text(uid), markup)
-        answer_cb(cq["id"])
+        edit_menu(cq, subscribe_text(uid), sub_kb()); answer_cb(cq["id"])
     elif action.startswith("buy:"):
-        send_stars_invoice(chat_id, uid, action.split(":", 1)[1])
-        answer_cb(cq["id"])
-    else:
-        answer_cb(cq["id"])
+        send_invoice(cid, uid, action.split(":",1)[1]); answer_cb(cq["id"])
+    else: answer_cb(cq["id"])
 
+def on_pre_checkout(p):
+    try: tg("answerPreCheckoutQuery", pre_checkout_query_id=p["id"], ok=True)
+    except TgErr: pass
 
-def on_pre_checkout(pcq):
-    try:
-        tg("answerPreCheckoutQuery", pre_checkout_query_id=pcq["id"], ok=True)
-    except TgError as e:
-        say(f"answerPreCheckoutQuery fail: {e}")
-
-
-def on_successful_payment(m):
-    sp = m["successful_payment"]
-    uid = m["from"]["id"]
-    chat_id = m["chat"]["id"]
-    payload = sp.get("invoice_payload", "")
-    charge = sp.get("telegram_payment_charge_id", "")
+def on_paid(m):
+    sp = m["successful_payment"]; uid = m["from"]["id"]; cid = m["chat"]["id"]
+    payload = sp.get("invoice_payload", ""); charge = sp.get("telegram_payment_charge_id","")
     amount = int(sp.get("total_amount", 0))
     if charge and db.execute("SELECT 1 FROM payments WHERE charge_id=?", (charge,)).fetchone():
-        say(f"дубликат платежа {charge}")
         return
     parts = payload.split("|")
     tier = parts[1] if len(parts) >= 2 and parts[0] == "sub" else "premium"
-    if tier not in ("basic", "premium", "mega"):
-        tier = "premium"
+    if tier not in ("basic","premium","mega"): tier = "premium"
 
     if tier == "mega":
-        db.execute("UPDATE users SET coins = coins + ? WHERE user_id=?", (MEGA_COINS, uid))
+        db.execute("UPDATE users SET coins=coins+? WHERE user_id=?", (MEGA_COINS, uid))
         try:
-            db.execute("INSERT INTO payments(charge_id, user_id, tier, stars, days, created) "
-                       "VALUES(?,?,?,?,?,?)", (charge, uid, tier, amount, 0, int(time.time())))
-        except sqlite3.IntegrityError:
-            pass
+            db.execute("INSERT INTO payments(charge_id,user_id,tier,stars,days,created) VALUES(?,?,?,?,?,?)",
+                       (charge, uid, tier, amount, 0, int(time.time())))
+        except sqlite3.IntegrityError: pass
         db.commit()
-        bal = db.execute("SELECT coins FROM users WHERE user_id=?", (uid,)).fetchone()["coins"]
-        send(chat_id,
-             f"💥 <b>МЕЕЕЕГАСУПЕРАКЦИИИЯ АКТИВИРОВАНА!!!!!!!</b>\n\n"
-             f"💰 +<b>{MEGA_COINS}</b> монет\n"
-             f"🐶 Охае, даттебаё, сабака кракена!\n"
-             f"💳 Баланс: <b>{bal}</b>\n\n"
-             f"Крути карточки на все! 🔥🎴")
-        for admin_id in ADMIN_IDS:
-            try:
-                send(admin_id, f"💥 <b>МЕГА-ПОКУПКА</b>\nИгрок: {esc(who_label(uid))}\n"
-                               f"+{MEGA_COINS} монет за {amount}⭐")
-            except TgError:
-                pass
+        bal = db.execute("SELECT coins FROM users WHERE user_id=?", (uid,)).fetchone()[0]
+        send(cid, f"💥 <b>МЕЕЕЕГАСУПЕРАКЦИИИЯ АКТИВИРОВАНА!!!!!!!</b>\n\n"
+                  f"💰 +<b>{MEGA_COINS}</b> монет\n🐶 Охае, даттебаё, сабака кракена!\n💳 Баланс: <b>{bal}</b>\n\n"
+                  f"Крути на все! 🔥🎴")
+        for a in ADMIN_IDS:
+            try: send(a, f"💥 МЕГА-ПОКУПКА\n{esc(who(uid))}\n+{MEGA_COINS} за {amount}⭐")
+            except TgErr: pass
         return
 
-    u = get_user(uid)
-    now = int(time.time())
-    active_now = is_subscribed(u)
-    same_tier = active_now and u["sub_tier"] == tier
-    new_until = (u["sub_until"] + SUB_DAYS * 86400) if same_tier else (now + SUB_DAYS * 86400)
+    u = get_user(uid); now = int(time.time())
+    same = is_sub(u) and u["sub_tier"] == tier
+    new_until = (u["sub_until"] + SUB_DAYS*86400) if same else (now + SUB_DAYS*86400)
     db.execute("UPDATE users SET sub_tier=?, sub_until=? WHERE user_id=?", (tier, new_until, uid))
     try:
-        db.execute("INSERT INTO payments(charge_id, user_id, tier, stars, days, created) "
-                   "VALUES(?,?,?,?,?,?)", (charge, uid, tier, amount, SUB_DAYS, now))
-    except sqlite3.IntegrityError:
-        pass
+        db.execute("INSERT INTO payments(charge_id,user_id,tier,stars,days,created) VALUES(?,?,?,?,?,?)",
+                   (charge, uid, tier, amount, SUB_DAYS, now))
+    except sqlite3.IntegrityError: pass
     db.commit()
-    until_str = dt.datetime.fromtimestamp(new_until).strftime("%d.%m.%Y")
-    send(chat_id, f"✅ <b>Оплата получена!</b>\n\nПодписка: <b>{sub_tier_label(tier)}</b>\n"
-                  f"⭐ Оплачено: {amount} звёзд\n📅 До: <b>{until_str}</b>")
-    for admin_id in ADMIN_IDS:
-        try:
-            send(admin_id, f"💰 <b>Новая подписка</b>\nИгрок: {esc(who_label(uid))}\n"
-                           f"Тариф: {tier}\nЗвёзд: {amount}")
-        except TgError:
-            pass
+    until = dt.datetime.fromtimestamp(new_until).strftime("%d.%m.%Y")
+    send(cid, f"✅ Оплата!\n{sub_label(tier)}\n⭐ {amount}\n📅 {until}")
+    for a in ADMIN_IDS:
+        try: send(a, f"💰 Подписка\n{esc(who(uid))}\n{tier}\n{amount}⭐")
+        except TgErr: pass
 
-
-# ───────────────────────── КАНАЛЫ ─────────────────────────
-
-CH_SLOTS = {
-    1: {"setting": "sub_channel",  "reward_setting": "ch_reward",  "table": "channel_rewards",
-        "reward_default": CHANNEL_REWARD,  "label": "📢 Канал #1", "emoji": "📢"},
-    2: {"setting": "sub_channel2", "reward_setting": "ch_reward2", "table": "channel2_rewards",
-        "reward_default": CHANNEL2_REWARD, "label": "📣 Канал #2", "emoji": "📣"},
+# ── КАНАЛЫ ──
+CH = {
+    1: {"set": "sub_channel", "rw": "ch_reward", "tbl": "channel_rewards", "def": CH1_R, "lbl": "📢 Канал #1", "e": "📢"},
+    2: {"set": "sub_channel2", "rw": "ch_reward2", "tbl": "channel2_rewards", "def": CH2_R, "lbl": "📣 Канал #2", "e": "📣"},
 }
 
+def ch_set(s): return get_setting(CH[s]["set"])
 
-def ch_setting(slot):
-    return get_setting(CH_SLOTS[slot]["setting"])
+def ch_rw(s=1):
+    v = get_setting(CH[s]["rw"])
+    try: return int(v) if v else CH[s]["def"]
+    except: return CH[s]["def"]
 
+def ch_url(c): return c if c.startswith("http") else "https://t.me/" + c.lstrip("@")
 
-def ch_reward(slot=1):
-    v = get_setting(CH_SLOTS[slot]["reward_setting"])
-    try:
-        return int(v) if v else CH_SLOTS[slot]["reward_default"]
-    except (ValueError, TypeError):
-        return CH_SLOTS[slot]["reward_default"]
+def ch_claimed(uid, s):
+    return bool(db.execute(f"SELECT 1 FROM {CH[s]['tbl']} WHERE user_id=? AND claimed=1", (uid,)).fetchone())
 
+def ch_mark(uid, s):
+    db.execute(f"INSERT OR REPLACE INTO {CH[s]['tbl']}(user_id,claimed,created) VALUES(?,1,?)", (uid, int(time.time())))
 
-def ch_url(channel):
-    return channel if channel.startswith("http") else "https://t.me/" + channel.lstrip("@")
-
-
-def ch_claimed(uid, slot):
-    return bool(db.execute(f"SELECT 1 FROM {CH_SLOTS[slot]['table']} WHERE user_id=? AND claimed=1",
-                           (uid,)).fetchone())
-
-
-def ch_mark_claimed(uid, slot):
-    db.execute(f"INSERT OR REPLACE INTO {CH_SLOTS[slot]['table']}(user_id, claimed, created) VALUES(?,1,?)",
-               (uid, int(time.time())))
-
-
-def check_channel_member(channel, uid):
-    try:
-        r = tg("getChatMember", chat_id=channel, user_id=uid)
-    except TgError as e:
-        say(f"getChatMember fail: {e}")
-        return None
-    status = r.get("status")
-    if status in ("creator", "administrator", "member"):
-        return True
-    if status == "restricted":
-        return bool(r.get("is_member"))
+def ch_check(channel, uid):
+    try: r = tg("getChatMember", chat_id=channel, user_id=uid)
+    except TgErr as e: say(f"getChatMember: {e}"); return None
+    st = r.get("status")
+    if st in ("creator","administrator","member"): return True
+    if st == "restricted": return bool(r.get("is_member"))
     return False
 
-
-def channelsub_text(uid):
-    active = [s for s in (1, 2) if ch_setting(s)]
-    if not active:
-        return "📢 <b>Подписка на каналы</b>\n\nРаздел не настроен.", None
+def chs_text(uid):
+    act = [s for s in (1,2) if ch_set(s)]
+    if not act: return "📢 <b>Подписка на каналы</b>\n\nНе настроено.", None
     lines = ["📢 <b>Подписка на каналы</b>", ""]
-    buttons = []
-    for slot in active:
-        cfg = CH_SLOTS[slot]
-        reward = ch_reward(slot)
-        got = ch_claimed(uid, slot)
-        lines += ["━━━━━━━━━━━━━━━━━━", cfg["label"],
-                  f"Награда: <b>+{reward}</b> монет (один раз)"]
-        lines.append("✅ награда получена" if got else "<i>Подпишись и нажми «Проверить»</i>")
+    bs = []
+    for s in act:
+        c = CH[s]; rw = ch_rw(s); got = ch_claimed(uid, s)
+        lines += ["━━━━━━━━━━━━━━━━━━", c["lbl"], f"Награда: <b>+{rw}</b> (один раз)"]
+        lines.append("✅ получена" if got else "<i>Подпишись и проверь</i>")
         lines.append("")
-        buttons.append([{"text": f"{cfg['emoji']} Перейти в #{slot}",
-                         "url": ch_url(ch_setting(slot))}])
-        if got:
-            buttons.append([btn(f"✅ #{slot} уже получено", "noop")])
-        else:
-            buttons.append([btn(f"✅ Проверить #{slot}", f"chsub:check:{slot}")])
-    return "\n".join(lines), kb(buttons)
-
+        bs.append([{"text": f"{c['e']} Перейти в #{s}", "url": ch_url(ch_set(s))}])
+        if got: bs.append([btn(f"✅ #{s} получено", "noop")])
+        else: bs.append([btn(f"✅ Проверить #{s}", f"chsub:check:{s}")])
+    return "\n".join(lines), kb(bs)
 
 def cmd_channelsub(m, args):
-    text, markup = channelsub_text(m["from"]["id"])
-    send(m["chat"]["id"], text, markup)
+    t, mk = chs_text(m["from"]["id"]); send(m["chat"]["id"], t, mk)
 
+def cb_chsub(cq, slot):
+    uid = cq["from"]["id"]; cid = (cq.get("message") or {}).get("chat",{}).get("id", uid)
+    ch = ch_set(slot)
+    if not ch: answer_cb(cq["id"], "Не настроен.", True); return
+    if ch_claimed(uid, slot): answer_cb(cq["id"], "Уже 🙂", True); return
+    ok = ch_check(ch, uid)
+    if ok is None: answer_cb(cq["id"], "Бот админ канала?", True); return
+    if not ok: answer_cb(cq["id"], "Не подписан 😔", True); return
+    rw = ch_rw(slot)
+    db.execute("UPDATE users SET coins=coins+? WHERE user_id=?", (rw, uid))
+    ch_mark(uid, slot); db.commit()
+    send(cid, f"🎉 <b>+{rw} монет</b>!"); answer_cb(cq["id"], "Получено!")
+    t, mk = chs_text(uid); edit_menu(cq, t, mk)
 
-def cb_channelsub(cq, slot):
-    uid = cq["from"]["id"]
-    chat_id = (cq.get("message") or {}).get("chat", {}).get("id", uid)
-    channel = ch_setting(slot)
-    if not channel:
-        answer_cb(cq["id"], "Канал не настроен.", True)
-        return
-    if ch_claimed(uid, slot):
-        answer_cb(cq["id"], "Уже получено 🙂", True)
-        return
-    ok = check_channel_member(channel, uid)
-    if ok is None:
-        answer_cb(cq["id"], "Не могу проверить. Бот админ канала?", True)
-        return
-    if not ok:
-        answer_cb(cq["id"], "Ты ещё не подписан 😔", True)
-        return
-    reward = ch_reward(slot)
-    db.execute("UPDATE users SET coins = coins + ? WHERE user_id=?", (reward, uid))
-    ch_mark_claimed(uid, slot)
-    db.commit()
-    send(chat_id, f"🎉 <b>+{reward} монет</b> за подписку на {CH_SLOTS[slot]['label']}!")
-    answer_cb(cq["id"], "Награда получена!")
-    text, markup = channelsub_text(uid)
-    edit_menu(cq, text, markup)
-
-
-def _set_channel_cmd(chat_id, slot, args):
-    a = (args or "").strip()
-    cfg = CH_SLOTS[slot]
-    if not a or a.lower() in ("off", "reset", "none"):
-        set_setting(cfg["setting"], None)
-        send(chat_id, f"{cfg['emoji']} {cfg['label']} отключён.")
-        return
-    set_setting(cfg["setting"], a)
-    send(chat_id, f"✅ {cfg['label']} — <code>{esc(a)}</code>\n"
-                  f"⚠️ Бот должен быть админом канала!\n"
-                  f"Награда: <b>+{ch_reward(slot)}</b>")
-
+def _set_ch(cid, slot, args):
+    a = (args or "").strip(); c = CH[slot]
+    if not a or a.lower() in ("off","reset","none"):
+        set_setting(c["set"], None); send(cid, f"{c['e']} {c['lbl']} отключён."); return
+    set_setting(c["set"], a)
+    send(cid, f"✅ {c['lbl']} — <code>{esc(a)}</code>\n⚠️ Бот должен быть админом!\nНаграда: +{ch_rw(slot)}")
 
 def cmd_setchannel(m, args):
-    if not is_admin(m["from"]["id"]):
-        send(m["chat"]["id"], "Только для админа.")
-        return
-    _set_channel_cmd(m["chat"]["id"], 1, args)
-
+    if not is_admin(m["from"]["id"]): send(m["chat"]["id"], "Только админ."); return
+    _set_ch(m["chat"]["id"], 1, args)
 
 def cmd_setchannel2(m, args):
-    if not is_admin(m["from"]["id"]):
-        send(m["chat"]["id"], "Только для админа.")
-        return
-    _set_channel_cmd(m["chat"]["id"], 2, args)
+    if not is_admin(m["from"]["id"]): send(m["chat"]["id"], "Только админ."); return
+    _set_ch(m["chat"]["id"], 2, args)
 
-
-def _set_chreward_cmd(chat_id, slot, args):
+def _set_rw(cid, slot, args):
     a = (args or "").strip()
-    if not a.isdigit() or int(a) <= 0:
-        send(chat_id, f"Формат: <code>/setchreward{'2' if slot == 2 else ''} 2000</code>")
-        return
-    set_setting(CH_SLOTS[slot]["reward_setting"], a)
-    send(chat_id, f"✅ Награда за {CH_SLOTS[slot]['label']}: <b>+{a}</b>")
-
+    if not a.isdigit() or int(a) <= 0: send(cid, f"/setchreward{'2' if slot==2 else ''} 2000"); return
+    set_setting(CH[slot]["rw"], a); send(cid, f"✅ {CH[slot]['lbl']}: +{a}")
 
 def cmd_setchreward(m, args):
-    if not is_admin(m["from"]["id"]):
-        send(m["chat"]["id"], "Только для админа.")
-        return
-    _set_chreward_cmd(m["chat"]["id"], 1, args)
-
+    if not is_admin(m["from"]["id"]): send(m["chat"]["id"], "Только админ."); return
+    _set_rw(m["chat"]["id"], 1, args)
 
 def cmd_setchreward2(m, args):
-    if not is_admin(m["from"]["id"]):
-        send(m["chat"]["id"], "Только для админа.")
-        return
-    _set_chreward_cmd(m["chat"]["id"], 2, args)
+    if not is_admin(m["from"]["id"]): send(m["chat"]["id"], "Только админ."); return
+    _set_rw(m["chat"]["id"], 2, args)
 
-
-# ───────────────────────── ДОСТИЖЕНИЯ ─────────────────────────
-
+# ── ДОСТИЖЕНИЯ ──
 def user_stats(uid):
-    total_game = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
+    tg_total = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
     uniq = db.execute("SELECT COUNT(*) FROM inventory WHERE user_id=? AND qty>0", (uid,)).fetchone()[0]
     owned = db.execute("SELECT COALESCE(SUM(qty),0) FROM inventory WHERE user_id=?", (uid,)).fetchone()[0]
-    by_rarity = {}
-    for k in RARITIES:
-        by_rarity[k] = db.execute(
-            "SELECT COUNT(*) FROM inventory i JOIN cards c ON c.id=i.card_id "
-            "WHERE i.user_id=? AND i.qty>0 AND c.rarity=?", (uid, k)).fetchone()[0]
+    by_r = {k: db.execute("SELECT COUNT(*) FROM inventory i JOIN cards c ON c.id=i.card_id "
+                          "WHERE i.user_id=? AND i.qty>0 AND c.rarity=?", (uid, k)).fetchone()[0]
+            for k in RARITIES}
     trades = db.execute("SELECT COUNT(*) FROM trades WHERE status='accepted' AND (from_id=? OR to_id=?)",
                         (uid, uid)).fetchone()[0]
     u = get_user(uid)
-    return {"total_game": total_game, "uniq": uniq, "owned": owned,
-            "by_rarity": by_rarity, "trades": trades, "streak": u["open_streak"] if u else 0}
+    return {"tg": tg_total, "uniq": uniq, "owned": owned, "by_r": by_r, "trades": trades,
+            "streak": u["open_streak"] if u else 0}
 
-
-def check_achievements(uid):
+def check_ach(uid):
     s = user_stats(uid)
     have = {r["code"] for r in db.execute("SELECT code FROM achievements WHERE user_id=?", (uid,))}
     earned = []
+    def g(c):
+        if c not in have:
+            db.execute("INSERT INTO achievements(user_id,code,got) VALUES(?,?,?)", (uid, c, int(time.time())))
+            earned.append(c)
+    if s["uniq"] >= 1: g("first")
+    if s["uniq"] >= 10: g("ten")
+    if s["uniq"] >= 50: g("fifty")
+    if s["tg"] and s["uniq"]*2 >= s["tg"]: g("half")
+    if s["tg"] and s["uniq"] >= s["tg"]: g("full")
+    if s["by_r"].get("common",0) >= 10: g("c10")
+    if s["by_r"].get("rare",0) >= 10: g("r10")
+    if s["by_r"].get("epic",0) >= 5: g("e5")
+    if s["by_r"].get("legendary",0) >= 1: g("l1")
+    if s["trades"] >= 1: g("trade1")
+    if s["streak"] >= 7: g("fire7")
+    if s["owned"] >= 100: g("rich100")
+    db.commit(); return earned
 
-    def give(code):
-        if code not in have:
-            db.execute("INSERT INTO achievements(user_id, code, got) VALUES(?,?,?)",
-                       (uid, code, int(time.time())))
-            earned.append(code)
+def notify_ach(cid, earned):
+    for c in earned:
+        e = ACH.get(c)
+        if e: send(cid, f"🏅 <b>Достижение!</b>\n{e[0]} {e[1]} — {e[2]}")
+    if earned: notify_quests(cid, prog_quest(cid, "ach1", 1))
 
-    if s["uniq"] >= 1:    give("first")
-    if s["uniq"] >= 10:   give("ten")
-    if s["uniq"] >= 50:   give("fifty")
-    if s["total_game"] and s["uniq"] * 2 >= s["total_game"]: give("half")
-    if s["total_game"] and s["uniq"] >= s["total_game"]:     give("full")
-    if s["by_rarity"].get("common", 0)    >= 10: give("c10")
-    if s["by_rarity"].get("rare", 0)      >= 10: give("r10")
-    if s["by_rarity"].get("epic", 0)      >= 5:  give("e5")
-    if s["by_rarity"].get("legendary", 0) >= 1:  give("l1")
-    if s["trades"] >= 1:  give("trade1")
-    if s["streak"] >= 7:  give("fire7")
-    if s["owned"]  >= 100: give("rich100")
-    db.commit()
-    return earned
-
-
-def notify_achievements(chat_id, earned):
-    for code in earned:
-        e = ACHIEVEMENTS.get(code)
-        if e:
-            send(chat_id, f"🏅 <b>Новое достижение!</b>\n{e[0]} {e[1]} — {e[2]}")
-    if earned:
-        notify_quests(chat_id, progress_quest(chat_id, "ach1", 1))
-
-
-def cmd_achievements(m, args):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
-    rows = {r["code"]: r["got"] for r in db.execute(
-        "SELECT code, got FROM achievements WHERE user_id=?", (uid,))}
+def cmd_ach(m, args):
+    uid, cid = m["from"]["id"], m["chat"]["id"]
+    rows = {r["code"]: r["got"] for r in db.execute("SELECT code, got FROM achievements WHERE user_id=?", (uid,))}
     s = user_stats(uid)
-    lines = [f"🏅 <b>Достижения</b>: {len(rows)}/{len(ACHIEVEMENTS)}\n"]
-    for code, (emoji, name, desc) in ACHIEVEMENTS.items():
-        if code in rows:
-            when = dt.datetime.fromtimestamp(rows[code]).strftime("%d.%m.%y")
-            lines.append(f"✅ {emoji} <b>{name}</b> — <i>{when}</i>")
-        else:
-            lines.append(f"🔒 {emoji} <b>{name}</b> — <i>{desc}</i>")
-    lines += ["", f"📊 Уникальных: {s['uniq']}/{s['total_game']}",
-              f"🎁 Экземпляров: {s['owned']}", f"🔥 Серия: {s['streak']} дн."]
-    send_long(chat_id, lines)
+    lines = [f"🏅 <b>Достижения</b>: {len(rows)}/{len(ACH)}\n"]
+    for c, (e, n, d) in ACH.items():
+        if c in rows:
+            w = dt.datetime.fromtimestamp(rows[c]).strftime("%d.%m.%y")
+            lines.append(f"✅ {e} <b>{n}</b> — <i>{w}</i>")
+        else: lines.append(f"🔒 {e} <b>{n}</b> — <i>{d}</i>")
+    lines += ["", f"📊 {s['uniq']}/{s['tg']}", f"🎁 {s['owned']}", f"🔥 {s['streak']} дн."]
+    send_long(cid, lines)
 
-
-# ───────────────────────── ТИТУЛЫ ─────────────────────────
-
+# ── ТИТУЛЫ ──
 def compute_titles(uid):
     s = user_stats(uid)
     have = set()
     ach = {r["code"] for r in db.execute("SELECT code FROM achievements WHERE user_id=?", (uid,))}
-    if s["uniq"] >= 1:    have.add("newbie")
-    if s["uniq"] >= 10:   have.add("meloman")
-    if s["uniq"] >= 25:   have.add("collector")
-    if s["uniq"] >= 50:   have.add("master")
-    if s["total_game"] and s["uniq"] >= s["total_game"]: have.add("legend")
-    if s["streak"] >= 7:  have.add("devoted")
-    if s["trades"] >= 5:  have.add("trader")
-    if s["owned"]  >= 100: have.add("rich")
-    if len(ach) >= 5:     have.add("chosen")
+    if s["uniq"] >= 1: have.add("newbie")
+    if s["uniq"] >= 10: have.add("meloman")
+    if s["uniq"] >= 25: have.add("collector")
+    if s["uniq"] >= 50: have.add("master")
+    if s["tg"] and s["uniq"] >= s["tg"]: have.add("legend")
+    if s["streak"] >= 7: have.add("devoted")
+    if s["trades"] >= 5: have.add("trader")
+    if s["owned"] >= 100: have.add("rich")
+    if len(ach) >= 5: have.add("chosen")
     return have
-
 
 def best_title(uid):
     have = compute_titles(uid)
-    for code in TITLE_ORDER:
-        if code in have:
-            return code
+    for c in TITLE_ORDER:
+        if c in have: return c
     return None
 
-
 def current_title(uid):
-    u = get_user(uid)
-    chosen = u["title"] if u else None
+    u = get_user(uid); ch = u["title"] if u else None
     have = compute_titles(uid)
-    if chosen and chosen in have:
-        return chosen
+    if ch and ch in have: return ch
     return best_title(uid)
 
-
 def title_str(uid):
-    code = current_title(uid)
-    if not code:
-        return ""
-    e, name, _ = TITLES[code]
-    return f"{e} <b>{name}</b>"
-
+    c = current_title(uid)
+    if not c: return ""
+    e, n, _ = TITLES[c]; return f"{e} <b>{n}</b>"
 
 def cmd_titles(m, args):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
-    have = compute_titles(uid)
-    cur = current_title(uid)
+    uid, cid = m["from"]["id"], m["chat"]["id"]
+    have = compute_titles(uid); cur = current_title(uid)
     lines = [f"🏷 <b>Титулы</b>: {len(have)}/{len(TITLES)}\n"]
-    buttons = []
-    for code in TITLE_ORDER:
-        e, name, cond = TITLES[code]
-        if code in have:
-            mark = "✅" if code == cur else "🔓"
-            lines.append(f"{mark} {e} <b>{name}</b>")
-            buttons.append(btn(f"{e} {name}", f"ti:{code}"))
-        else:
-            lines.append(f"🔒 {e} <b>{name}</b> — <i>{cond}</i>")
-    markup = kb([buttons[i:i + 2] for i in range(0, len(buttons), 2)])
-    lines.append("")
-    lines.append("Нажми титул, чтобы сделать его активным.")
-    send_long(chat_id, lines, markup)
-
+    bs = []
+    for c in TITLE_ORDER:
+        e, n, cond = TITLES[c]
+        if c in have:
+            mk = "✅" if c == cur else "🔓"
+            lines.append(f"{mk} {e} <b>{n}</b>")
+            bs.append(btn(f"{e} {n}", f"ti:{c}"))
+        else: lines.append(f"🔒 {e} <b>{n}</b> — <i>{cond}</i>")
+    lines += ["", "Нажми — активировать"]
+    send_long(cid, lines, kb([bs[i:i+2] for i in range(0, len(bs), 2)]))
 
 def cb_title(cq, code):
     uid = cq["from"]["id"]
-    have = compute_titles(uid)
-    if code not in have or code not in TITLES:
-        answer_cb(cq["id"], "Титул ещё не открыт.", True)
-        return
-    db.execute("UPDATE users SET title=? WHERE user_id=?", (code, uid))
-    db.commit()
-    e, name, _ = TITLES[code]
-    answer_cb(cq["id"], f"Активен: {e} {name}", True)
+    if code not in compute_titles(uid) or code not in TITLES:
+        answer_cb(cq["id"], "Не открыт.", True); return
+    db.execute("UPDATE users SET title=? WHERE user_id=?", (code, uid)); db.commit()
+    e, n, _ = TITLES[code]; answer_cb(cq["id"], f"✅ {e} {n}", True)
 
-
-# ───────────────────────── КВЕСТЫ ─────────────────────────
-
+# ── КВЕСТЫ ──
 def ensure_quests(uid):
-    day = today_str()
-    rows = db.execute("SELECT code FROM quests WHERE user_id=? AND day=?", (uid, day)).fetchall()
-    if rows:
-        return
-    picks = random.sample(QUEST_POOL, 3)
-    for code, emoji, desc, target, xp, bonus in picks:
-        db.execute("INSERT OR IGNORE INTO quests(user_id, day, code, progress, target, xp, done) "
-                   "VALUES(?,?,?,0,?,?,0)", (uid, day, code, target, xp))
+    day = today()
+    if db.execute("SELECT code FROM quests WHERE user_id=? AND day=?", (uid, day)).fetchall(): return
+    for c, e, d, t, xp, b in random.sample(QUESTS, 3):
+        db.execute("INSERT OR IGNORE INTO quests(user_id,day,code,progress,target,xp,done) VALUES(?,?,?,0,?,?,0)",
+                   (uid, day, c, t, xp))
     db.commit()
 
-
-def quest_info(code):
-    for c, e, d, t, xp, b in QUEST_POOL:
-        if c == code:
-            return {"emoji": e, "desc": d, "target": t, "xp": xp, "bonus": b}
+def quest_info(c):
+    for cc, e, d, t, xp, b in QUESTS:
+        if cc == c: return {"e": e, "d": d, "t": t, "xp": xp, "b": b}
     return None
 
-
-def progress_quest(uid, code, amount=1):
-    day = today_str()
-    ensure_quests(uid)
-    row = db.execute("SELECT * FROM quests WHERE user_id=? AND day=? AND code=?",
-                     (uid, day, code)).fetchone()
-    if not row or row["done"]:
-        return []
-    new_progress = row["progress"] + amount
-    done = 1 if new_progress >= row["target"] else 0
+def prog_quest(uid, code, amt=1):
+    day = today(); ensure_quests(uid)
+    r = db.execute("SELECT * FROM quests WHERE user_id=? AND day=? AND code=?", (uid, day, code)).fetchone()
+    if not r or r["done"]: return []
+    np = r["progress"] + amt
+    done = 1 if np >= r["target"] else 0
     db.execute("UPDATE quests SET progress=?, done=? WHERE user_id=? AND day=? AND code=?",
-               (new_progress, done, uid, day, code))
-    if done:
-        add_xp(uid, row["xp"])
+               (np, done, uid, day, code))
+    if done: add_xp(uid, r["xp"])
     db.commit()
-    if not done:
-        return []
+    if not done: return []
     info = quest_info(code)
-    if info and info["bonus"] == "card":
+    if info and info["b"] == "card":
         pool = db.execute("SELECT * FROM cards").fetchall()
-        if pool:
-            card = random.choice(pool)
-            add_card(uid, card["id"], 1)
-            db.commit()
+        if pool: add_card(uid, random.choice(pool)["id"], 1); db.commit()
     return [(code, info)]
 
-
-def notify_quests(chat_id, completed):
-    for code, info in completed:
-        if not info:
-            continue
-        extra = " + 🎴 бонусная карточка!" if info["bonus"] == "card" else ""
-        send(chat_id, f"🎯 <b>Квест выполнен!</b>\n{info['emoji']} {info['desc']} — "
-                      f"+{info['xp']} XP{extra}")
-
+def notify_quests(cid, done):
+    for c, info in done:
+        if not info: continue
+        ex = " + 🎴!" if info["b"] == "card" else ""
+        send(cid, f"🎯 <b>Квест выполнен!</b>\n{info['e']} {info['d']} — +{info['xp']} XP{ex}")
 
 def cmd_quests(m, args):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
-    ensure_quests(uid)
-    day = today_str()
-    rows = db.execute("SELECT * FROM quests WHERE user_id=? AND day=? ORDER BY code",
-                      (uid, day)).fetchall()
+    uid, cid = m["from"]["id"], m["chat"]["id"]
+    ensure_quests(uid); day = today()
+    rows = db.execute("SELECT * FROM quests WHERE user_id=? AND day=? ORDER BY code", (uid, day)).fetchall()
     xp = db.execute("SELECT xp FROM users WHERE user_id=?", (uid,)).fetchone()["xp"]
-    lines = [f"🎯 <b>Ежедневные квесты</b>\n", f"⭐ XP: <code>{xp}</code>\n"]
+    lines = ["🎯 <b>Ежедневные квесты</b>", f"⭐ XP: <code>{xp}</code>", ""]
     for r in rows:
         info = quest_info(r["code"])
-        if not info:
-            continue
-        done = "✅" if r["done"] else "⏳"
+        if not info: continue
+        s = "✅" if r["done"] else "⏳"
         bd = min(r["progress"], r["target"])
-        bar = "▰" * bd + "▱" * (r["target"] - bd)
-        lines.append(f"{done} {info['emoji']} <b>{info['desc']}</b>")
-        lines.append(f"    <code>{bar}</code> {bd}/{r['target']}  +{r['xp']} XP")
-    send_long(chat_id, lines)
+        bar = "▰"*bd + "▱"*(r["target"]-bd)
+        lines += [f"{s} {info['e']} <b>{info['d']}</b>", f"    <code>{bar}</code> {bd}/{r['target']}"]
+    send_long(cid, lines)
 
-
-# ───────────────────────── ДРУЗЬЯ ─────────────────────────
-
+# ── ДРУЗЬЯ ──
 def cmd_friends(m, args):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
-    friends = db.execute("SELECT friend_id FROM friends WHERE user_id=? AND status='accepted'", (uid,)).fetchall()
-    incoming = db.execute("SELECT user_id FROM friends WHERE friend_id=? AND status='pending'", (uid,)).fetchall()
-    outgoing = db.execute("SELECT friend_id FROM friends WHERE user_id=? AND status='pending'", (uid,)).fetchall()
-    lines = ["👥 <b>Друзья</b>\n"]
-    if friends:
-        lines.append("<b>Мои друзья:</b>")
-        for r in friends:
-            lines.append(f"• {esc(who_label(r['friend_id']))}")
-    else:
-        lines.append("У тебя пока нет друзей.")
+    uid, cid = m["from"]["id"], m["chat"]["id"]
+    f = db.execute("SELECT friend_id FROM friends WHERE user_id=? AND status='accepted'", (uid,)).fetchall()
+    inc = db.execute("SELECT user_id FROM friends WHERE friend_id=? AND status='pending'", (uid,)).fetchall()
+    out = db.execute("SELECT friend_id FROM friends WHERE user_id=? AND status='pending'", (uid,)).fetchall()
+    lines = ["👥 <b>Друзья</b>", ""]
+    if f:
+        lines.append("<b>Друзья:</b>")
+        for r in f: lines.append(f"• {esc(who(r['friend_id']))}")
+    else: lines.append("Пусто.")
     lines.append("")
-    if incoming:
+    if inc:
         lines.append("<b>Входящие:</b>")
-        for r in incoming:
-            lines.append(f"• {esc(who_label(r['user_id']))}")
+        for r in inc: lines.append(f"• {esc(who(r['user_id']))}")
         lines.append("")
-    if outgoing:
+    if out:
         lines.append("<b>Исходящие:</b>")
-        for r in outgoing:
-            lines.append(f"• ⏳ {esc(who_label(r['friend_id']))}")
+        for r in out: lines.append(f"• ⏳ {esc(who(r['friend_id']))}")
         lines.append("")
-    lines.append("Добавить: <code>/addfriend @ник</code>")
-    lines.append("Удалить: <code>/delfriend @ник</code>")
-    send_long(chat_id, lines)
-
+    lines += ["<code>/addfriend @ник</code>", "<code>/delfriend @ник</code>"]
+    send_long(cid, lines)
 
 def cmd_addfriend(m, args):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
-    arg = (args or "").strip()
-    if not arg.startswith("@"):
-        send(chat_id, "Формат: <code>/addfriend @ник</code>")
-        return
-    target = db.execute("SELECT * FROM users WHERE username=?", (arg[1:].lower(),)).fetchone()
-    if not target:
-        send(chat_id, "Не найден.")
-        return
-    if target["user_id"] == uid:
-        send(chat_id, "Сам с собой 🙂")
-        return
-    rel = db.execute("SELECT status FROM friends WHERE user_id=? AND friend_id=?",
-                     (uid, target["user_id"])).fetchone()
-    if rel:
-        send(chat_id, "Уже друзья." if rel["status"] == "accepted" else "Заявка уже отправлена.")
-        return
-    opp = db.execute("SELECT status FROM friends WHERE user_id=? AND friend_id=?",
-                     (target["user_id"], uid)).fetchone()
+    uid, cid = m["from"]["id"], m["chat"]["id"]
+    a = (args or "").strip()
+    if not a.startswith("@"): send(cid, "/addfriend @ник"); return
+    t = db.execute("SELECT * FROM users WHERE username=?", (a[1:].lower(),)).fetchone()
+    if not t: send(cid, "Нет"); return
+    if t["user_id"] == uid: send(cid, "С собой 🙂"); return
+    r = db.execute("SELECT status FROM friends WHERE user_id=? AND friend_id=?", (uid, t["user_id"])).fetchone()
+    if r: send(cid, "Уже друзья." if r["status"]=="accepted" else "Уже отправлено."); return
+    opp = db.execute("SELECT status FROM friends WHERE user_id=? AND friend_id=?", (t["user_id"], uid)).fetchone()
     if opp and opp["status"] == "pending":
-        db.execute("UPDATE friends SET status='accepted' WHERE user_id=? AND friend_id=?",
-                   (target["user_id"], uid))
-        db.execute("INSERT INTO friends(user_id, friend_id, status, created) VALUES(?,?,?,?)",
-                   (uid, target["user_id"], "accepted", int(time.time())))
-        db.commit()
-        send(chat_id, f"✅ Теперь вы друзья с {esc(who_label(target['user_id']))}!")
-        try:
-            send(target["user_id"], f"✅ {esc(who_label(uid))} принял заявку!")
-        except TgError:
-            pass
+        db.execute("UPDATE friends SET status='accepted' WHERE user_id=? AND friend_id=?", (t["user_id"], uid))
+        db.execute("INSERT INTO friends(user_id,friend_id,status,created) VALUES(?,?,?,?)",
+                   (uid, t["user_id"], "accepted", int(time.time())))
+        db.commit(); send(cid, f"✅ Друзья с {esc(who(t['user_id']))}!")
+        try: send(t["user_id"], f"✅ {esc(who(uid))} принял!")
+        except TgErr: pass
         return
-    db.execute("INSERT INTO friends(user_id, friend_id, status, created) VALUES(?,?,?,?)",
-               (uid, target["user_id"], "pending", int(time.time())))
+    db.execute("INSERT INTO friends(user_id,friend_id,status,created) VALUES(?,?,?,?)",
+               (uid, t["user_id"], "pending", int(time.time())))
     db.commit()
-    markup = kb([[btn("✅ Принять", f"f:y:{uid}"), btn("❌ Отклонить", f"f:n:{uid}")]])
-    try:
-        send(target["user_id"], f"👥 <b>{esc(who_label(uid))}</b> хочет добавить тебя в друзья.", markup)
-    except TgError:
-        send(chat_id, "Игрок не запускал бота.")
-        return
-    send(chat_id, "📨 Заявка отправлена.")
-
+    mk = kb([[btn("✅ Принять", f"f:y:{uid}"), btn("❌ Отклонить", f"f:n:{uid}")]])
+    try: send(t["user_id"], f"👥 <b>{esc(who(uid))}</b> хочет в друзья", mk)
+    except TgErr: send(cid, "Не получилось"); return
+    send(cid, "📨 Отправлено.")
 
 def cmd_delfriend(m, args):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
-    arg = (args or "").strip()
-    if not arg.startswith("@"):
-        send(chat_id, "Формат: <code>/delfriend @ник</code>")
-        return
-    target = db.execute("SELECT * FROM users WHERE username=?", (arg[1:].lower(),)).fetchone()
-    if not target:
-        send(chat_id, "Не найден.")
-        return
-    db.execute("DELETE FROM friends WHERE user_id=? AND friend_id=?", (uid, target["user_id"]))
-    db.execute("DELETE FROM friends WHERE user_id=? AND friend_id=?", (target["user_id"], uid))
-    db.commit()
-    send(chat_id, f"🗑 {esc(who_label(target['user_id']))} удалён из друзей.")
+    uid, cid = m["from"]["id"], m["chat"]["id"]
+    a = (args or "").strip()
+    if not a.startswith("@"): send(cid, "/delfriend @ник"); return
+    t = db.execute("SELECT * FROM users WHERE username=?", (a[1:].lower(),)).fetchone()
+    if not t: send(cid, "Нет"); return
+    db.execute("DELETE FROM friends WHERE user_id=? AND friend_id=?", (uid, t["user_id"]))
+    db.execute("DELETE FROM friends WHERE user_id=? AND friend_id=?", (t["user_id"], uid))
+    db.commit(); send(cid, f"🗑 {esc(who(t['user_id']))} удалён.")
 
-
-def cb_friend(cq, action, other_id):
+def cb_friend(cq, action, other):
     uid = cq["from"]["id"]
-    if uid == other_id:
-        answer_cb(cq["id"], "Это твоя заявка.", True)
-        return
+    if uid == other: answer_cb(cq["id"], "Твоя.", True); return
     if action == "a":
         msg = cq.get("message") or {}
-        if msg.get("message_id") and msg.get("chat"):
-            clear_markup(msg["chat"]["id"], msg["message_id"])
-        opp = db.execute("SELECT status FROM friends WHERE user_id=? AND friend_id=?",
-                         (other_id, uid)).fetchone()
+        if msg.get("message_id") and msg.get("chat"): clear_kb(msg["chat"]["id"], msg["message_id"])
+        opp = db.execute("SELECT status FROM friends WHERE user_id=? AND friend_id=?", (other, uid)).fetchone()
         if opp and opp["status"] == "pending":
-            db.execute("UPDATE friends SET status='accepted' WHERE user_id=? AND friend_id=?",
-                       (other_id, uid))
-            db.execute("INSERT INTO friends(user_id, friend_id, status, created) VALUES(?,?,?,?)",
-                       (uid, other_id, "accepted", int(time.time())))
+            db.execute("UPDATE friends SET status='accepted' WHERE user_id=? AND friend_id=?", (other, uid))
+            db.execute("INSERT INTO friends(user_id,friend_id,status,created) VALUES(?,?,?,?)", (uid, other, "accepted", int(time.time())))
+            db.commit(); send(msg["chat"]["id"], f"✅ Друзья с {esc(who(other))}!")
+            try: send(other, f"✅ {esc(who(uid))} принял!")
+            except TgErr: pass
+            answer_cb(cq["id"]); return
+        ex = db.execute("SELECT status FROM friends WHERE user_id=? AND friend_id=?", (uid, other)).fetchone()
+        if ex and ex["status"] == "accepted": answer_cb(cq["id"], "Уже друзья.", True); return
+        if not ex:
+            db.execute("INSERT INTO friends(user_id,friend_id,status,created) VALUES(?,?,?,?)", (uid, other, "pending", int(time.time())))
             db.commit()
-            send(msg["chat"]["id"], f"✅ Теперь вы друзья с {esc(who_label(other_id))}!")
-            try:
-                send(other_id, f"✅ {esc(who_label(uid))} принял заявку!")
-            except TgError:
-                pass
-            answer_cb(cq["id"])
-            return
-        exists = db.execute("SELECT status FROM friends WHERE user_id=? AND friend_id=?",
-                            (uid, other_id)).fetchone()
-        if exists and exists["status"] == "accepted":
-            answer_cb(cq["id"], "Вы уже друзья.", True)
-            return
-        if not exists:
-            db.execute("INSERT INTO friends(user_id, friend_id, status, created) VALUES(?,?,?,?)",
-                       (uid, other_id, "pending", int(time.time())))
-            db.commit()
-        markup = kb([[btn("✅ Принять", f"f:y:{uid}"), btn("❌ Отклонить", f"f:n:{uid}")]])
-        try:
-            send(other_id, f"👥 <b>{esc(who_label(uid))}</b> хочет добавить тебя в друзья.", markup)
-        except TgError:
-            pass
-        answer_cb(cq["id"], "Заявка отправлена")
-        return
-    rel = db.execute("SELECT status FROM friends WHERE user_id=? AND friend_id=?",
-                     (other_id, uid)).fetchone()
-    if not rel or rel["status"] != "pending":
-        answer_cb(cq["id"], "Уже обработано.", True)
-        return
-    msg = cq.get("message") or {}
-    chat_id, mid = msg.get("chat", {}).get("id"), msg.get("message_id")
+        mk = kb([[btn("✅ Принять", f"f:y:{uid}"), btn("❌ Отклонить", f"f:n:{uid}")]])
+        try: send(other, f"👥 <b>{esc(who(uid))}</b> хочет в друзья", mk)
+        except TgErr: pass
+        answer_cb(cq["id"], "Отправлено"); return
+    r = db.execute("SELECT status FROM friends WHERE user_id=? AND friend_id=?", (other, uid)).fetchone()
+    if not r or r["status"] != "pending": answer_cb(cq["id"], "Уже обработано.", True); return
+    msg = cq.get("message") or {}; cid, mid = msg.get("chat",{}).get("id"), msg.get("message_id")
     if action == "y":
-        db.execute("UPDATE friends SET status='accepted' WHERE user_id=? AND friend_id=?",
-                   (other_id, uid))
-        ins = db.execute("SELECT 1 FROM friends WHERE user_id=? AND friend_id=?",
-                         (uid, other_id)).fetchone()
-        if not ins:
-            db.execute("INSERT INTO friends(user_id, friend_id, status, created) VALUES(?,?,?,?)",
-                       (uid, other_id, "accepted", int(time.time())))
+        db.execute("UPDATE friends SET status='accepted' WHERE user_id=? AND friend_id=?", (other, uid))
+        if not db.execute("SELECT 1 FROM friends WHERE user_id=? AND friend_id=?", (uid, other)).fetchone():
+            db.execute("INSERT INTO friends(user_id,friend_id,status,created) VALUES(?,?,?,?)", (uid, other, "accepted", int(time.time())))
         db.commit()
-        if chat_id and mid:
-            edit_text(chat_id, mid, f"✅ Теперь вы друзья с {esc(who_label(other_id))}.")
-        try:
-            send(other_id, f"✅ {esc(who_label(uid))} принял заявку!")
-        except TgError:
-            pass
+        if cid and mid: edit_text(cid, mid, f"✅ Друзья с {esc(who(other))}.")
+        try: send(other, f"✅ {esc(who(uid))} принял!")
+        except TgErr: pass
     else:
-        db.execute("DELETE FROM friends WHERE user_id=? AND friend_id=?", (other_id, uid))
-        db.commit()
-        if chat_id and mid:
-            edit_text(chat_id, mid, f"❌ Заявка от {esc(who_label(other_id))} отклонена.")
-        try:
-            send(other_id, f"❌ {esc(who_label(uid))} отклонил заявку.")
-        except TgError:
-            pass
+        db.execute("DELETE FROM friends WHERE user_id=? AND friend_id=?", (other, uid)); db.commit()
+        if cid and mid: edit_text(cid, mid, f"❌ Заявка от {esc(who(other))} отклонена.")
+        try: send(other, f"❌ {esc(who(uid))} отклонил.")
+        except TgErr: pass
     answer_cb(cq["id"])
 
-
-# ───────────────────────── РАМКИ / ПРОФИЛЬ ─────────────────────────
-
+# ── РАМКИ / ПРОФИЛЬ ──
 def frame_for(uid):
     u = db.execute("SELECT avatar_card FROM users WHERE user_id=?", (uid,)).fetchone()
-    if not u or not u["avatar_card"]:
-        return ""
+    if not u or not u["avatar_card"]: return ""
     card = get_card(u["avatar_card"])
-    if not card:
-        return ""
+    if not card: return ""
     s = user_stats(uid)
-    ach_count = db.execute("SELECT COUNT(*) FROM achievements WHERE user_id=?", (uid,)).fetchone()[0]
-    if (s["total_game"] and s["uniq"] >= s["total_game"]
-            and s["by_rarity"].get("legendary", 0) >= 2):
-        return SPECIAL_FRAMES["rainbow"]
-    if s["total_game"] and s["uniq"] >= s["total_game"]:
-        return SPECIAL_FRAMES["diamond"]
-    if s["streak"] >= 7:
-        return SPECIAL_FRAMES["fire"]
-    if card["rarity"] == "legendary" and ach_count >= 3:
-        return SPECIAL_FRAMES["crown"]
+    ach = db.execute("SELECT COUNT(*) FROM achievements WHERE user_id=?", (uid,)).fetchone()[0]
+    if s["tg"] and s["uniq"] >= s["tg"] and s["by_r"].get("legendary",0) >= 2: return SPECIAL["rainbow"]
+    if s["tg"] and s["uniq"] >= s["tg"]: return SPECIAL["diamond"]
+    if s["streak"] >= 7: return SPECIAL["fire"]
+    if card["rarity"] == "legendary" and ach >= 3: return SPECIAL["crown"]
     return FRAMES.get(card["rarity"], "")
 
+def pity_left(c, t): return max(1, t - c)
 
-def pity_left(count, threshold):
-    return max(1, threshold - count)
-
-
-def claim_info(last_claim, now=None):
+def claim_info(lc, now=None):
     now = time.time() if now is None else now
-    if not last_claim:
-        return CLAIM_AMOUNT, 0, False
-    el = now - last_claim
-    if el < CLAIM_SECONDS:
-        return 0, CLAIM_SECONDS - el, False
+    if not lc: return CLAIM_AMOUNT, 0, False
+    el = now - lc
+    if el < CLAIM_SECONDS: return 0, CLAIM_SECONDS - el, False
     maxed = el >= CLAIM_MAX_SECONDS
     el = min(el, CLAIM_MAX_SECONDS)
-    steps = int((el - CLAIM_SECONDS) // STEP_SECONDS)
-    nxt = 0 if maxed else STEP_SECONDS - ((el - CLAIM_SECONDS) % STEP_SECONDS)
+    steps = int((el - CLAIM_SECONDS) // STEP)
+    nxt = 0 if maxed else STEP - ((el - CLAIM_SECONDS) % STEP)
     return CLAIM_AMOUNT + steps * CLAIM_BONUS, nxt, maxed
 
-
-def max_claim_amount():
-    return CLAIM_AMOUNT + CLAIM_BONUS * ((CLAIM_MAX_SECONDS - CLAIM_SECONDS) // STEP_SECONDS)
-
+def max_claim(): return CLAIM_AMOUNT + CLAIM_BONUS * ((CLAIM_MAX_SECONDS - CLAIM_SECONDS) // STEP)
 
 def profile_text(uid):
     u = get_user(uid)
-    total_game = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
+    tg = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
     uniq = db.execute("SELECT COUNT(*) FROM inventory WHERE user_id=? AND qty>0", (uid,)).fetchone()[0]
-    owned_all = db.execute("SELECT COALESCE(SUM(qty),0) FROM inventory WHERE user_id=?", (uid,)).fetchone()[0]
-    trades = db.execute("SELECT COUNT(*) FROM trades WHERE status='accepted' AND (from_id=? OR to_id=?)",
-                        (uid, uid)).fetchone()[0]
-    ach_count = db.execute("SELECT COUNT(*) FROM achievements WHERE user_id=?", (uid,)).fetchone()[0]
-    friends_count = db.execute("SELECT COUNT(*) FROM friends WHERE user_id=? AND status='accepted'",
-                               (uid,)).fetchone()[0]
-    t_str = title_str(uid)
-    xp = u["xp"] or 0
-    fr = frame_for(uid)
-    lines = [f"👤 <b>{badge(u['equipped'])}{esc(u['name'])}</b>, профиль:",
-             f"🆔 <code>{uid}</code>"]
-    if t_str:
-        lines.append(f"🏷 Титул: {t_str}")
+    owned = db.execute("SELECT COALESCE(SUM(qty),0) FROM inventory WHERE user_id=?", (uid,)).fetchone()[0]
+    tr = db.execute("SELECT COUNT(*) FROM trades WHERE status='accepted' AND (from_id=? OR to_id=?)", (uid, uid)).fetchone()[0]
+    ach = db.execute("SELECT COUNT(*) FROM achievements WHERE user_id=?", (uid,)).fetchone()[0]
+    fr = db.execute("SELECT COUNT(*) FROM friends WHERE user_id=? AND status='accepted'", (uid,)).fetchone()[0]
+    lines = [f"👤 <b>{badge(u['equipped'])}{esc(u['name'])}</b>", f"🆔 <code>{uid}</code>"]
+    ts = title_str(uid)
+    if ts: lines.append(f"🏷 {ts}")
     if u["avatar_card"]:
         ac = get_card(u["avatar_card"])
-        if ac:
-            lines.append(f"{fr} Аватар: {title_of(ac)}")
-    lines += ["",
-              f"💰 Монеты: <b>{u['coins']}</b>",
-              f"⭐ XP: <code>{xp}</code>",
-              f"🏅 Достижений: <code>{ach_count}/{len(ACHIEVEMENTS)}</code>",
-              f"👥 Друзей: <code>{friends_count}</code>",
-              "",
-              f"🎵 Коллекция: <b>{uniq}/{total_game}</b> ({pct(uniq, total_game)}%)",
-              f"📦 С дубликатами: {owned_all}", ""]
+        if ac: lines.append(f"{frame_for(uid)} {title_of(ac)}")
+    lines += ["", f"💰 <b>{u['coins']}</b>", f"⭐ XP: <code>{u['xp'] or 0}</code>",
+              f"🏅 {ach}/{len(ACH)}", f"👥 Друзей: {fr}",
+              "", f"🎵 Коллекция: <b>{uniq}/{tg}</b> ({pct(uniq, tg)}%)", f"📦 Дубли: {owned}", ""]
     for k in RARITIES:
         tot = db.execute("SELECT COUNT(*) FROM cards WHERE rarity=?", (k,)).fetchone()[0]
         own = db.execute("SELECT COUNT(*) FROM inventory i JOIN cards c ON c.id=i.card_id "
                          "WHERE i.user_id=? AND i.qty>0 AND c.rarity=?", (uid, k)).fetchone()[0]
-        lines.append(f"{RARITIES[k][1]} {RARITIES[k][3]}: {own}/{tot} ({pct(own, tot)}%)")
+        lines.append(f"{RARITIES[k][1]} {RARITIES[k][3]}: {own}/{tot} ({pct(own,tot)}%)")
     lines.append("")
-    if is_subscribed(u):
-        until_str = dt.datetime.fromtimestamp(u["sub_until"]).strftime("%d.%m.%Y")
-        lines.append(f"⭐ Подписка: {sub_tier_label(u['sub_tier'])} до {until_str}")
-    for slot in (1, 2):
-        if ch_setting(slot):
-            got = ch_claimed(uid, slot)
-            lines.append(f"{CH_SLOTS[slot]['emoji']} {CH_SLOTS[slot]['label']}: "
-                         f"{'✅ награда' if got else 'не подписан'}")
-    lines += [f"🎯 Гарант: 🟡 через {pity_left(u['pity_leg'], PITY_LEGENDARY)} · "
-              f"🟣 через {pity_left(u['pity_epic'], PITY_EPIC)}",
-              f"🎁 Друзей: <b>{u['ref_count'] or 0}</b>",
-              f"🕰 В игре: {age_text(u['joined'])}",
-              f"🤝 Обменов: {trades}"]
+    if is_sub(u):
+        until = dt.datetime.fromtimestamp(u["sub_until"]).strftime("%d.%m.%Y")
+        lines.append(f"⭐ {sub_label(u['sub_tier'])} до {until}")
+    for s in (1,2):
+        if ch_set(s):
+            got = ch_claimed(uid, s)
+            lines.append(f"{CH[s]['e']} {CH[s]['lbl']}: {'✅' if got else 'не подписан'}")
+    lines += [f"🎯 Гарант: 🟡 через {pity_left(u['pity_leg'], PITY_L)}, 🟣 через {pity_left(u['pity_epic'], PITY_E)}",
+              f"🎁 Приглашено: {u['ref_count'] or 0}",
+              f"🕰 {age_text(u['joined'])}",
+              f"🤝 Обменов: {tr}"]
     return "\n".join(lines)
 
-
-# ───────────────────────── КЛАВИАТУРЫ ─────────────────────────
-
+# ── КЛАВИАТУРЫ ──
 def reply_kb(rows):
-    return {"keyboard": [[{"text": t} for t in row] for row in rows],
-            "resize_keyboard": True, "is_persistent": True}
+    return {"keyboard": [[{"text": t} for t in row] for row in rows], "resize_keyboard": True, "is_persistent": True}
 
-
-CLAIM_LABEL = "💰 Забрать"
-KEYBOARDS = {
-    "main": [
-        ["🎴 Карточки", "🎤 Артисты"],
-        ["💰 Монеты", "🏆 Топ"],
-        ["⭐ Подписка", "📢 Канал"],
-        ["🎁 Рефералы", "👤 Профиль"],
-        ["🎯 Квесты", "🏅 Достижения"],
-        ["🏷 Титулы", "👥 Друзья"],
-        ["❓ Помощь"],
-    ],
+CLAIM_LBL = "💰 Забрать"
+KBS = {
+    "main": [["🎴 Карточки", "🎤 Артисты"], ["💰 Монеты", "🏆 Топ"], ["⭐ Подписка", "📢 Канал"],
+             ["🎁 Рефералы", "👤 Профиль"], ["🎯 Квесты", "🏅 Достижения"],
+             ["🏷 Титулы", "👥 Друзья"], ["❓ Помощь"]],
     "cards": [["🎲 Открыть", "📚 Коллекция"], ["🔁 Обмен", "💡 Предложить"], ["◀ Назад"]],
     "open": [["🎲 Крутить"], ["◀ Назад"]],
     "shop": [["🛍 Магазин", "🚫 Снять значок"], ["◀ Назад"]],
-    "coins": [[CLAIM_LABEL, "💳 Баланс"], ["◀ Назад"]],
-    "admin": [["➕ Трек", "📋 Заявки"], ["🗂 Карточки", "💿 Помощь"],
-              ["🎧 Deezer", "🎤 Артисты"], ["🎟 Промокоды", "◀ Назад"]],
+    "coins": [[CLAIM_LBL, "💳 Баланс"], ["◀ Назад"]],
+    "admin": [["➕ Трек", "📋 Заявки"], ["🗂 Карточки", "💿 Помощь"], ["🎧 Deezer", "🎤 Артисты"],
+              ["🎟 Промокоды", "◀ Назад"]],
 }
 LABELS = {
-    "🎴 Карточки": "g_cards", "💄 Косметика": "g_shop", "💰 Монеты": "g_coins",
-    "🏆 Топ": "top", "👤 Профиль": "home", "❓ Помощь": "help", "🛠 Админ": "g_admin",
-    "⭐ Подписка": "sub_menu", "📢 Канал": "chsub_menu", "🎁 Рефералы": "ref",
-    "🎤 Артисты": "artists", "🎯 Квесты": "quests", "🏅 Достижения": "ach",
-    "🏷 Титулы": "titles", "👥 Друзья": "friends",
-    "◀ Назад": "back",
-    "🎲 Открыть": "g_open", "📚 Коллекция": "coll", "🔁 Обмен": "trade", "💡 Предложить": "suggest",
-    "🎲 Крутить": "open:random",
-    "🛍 Магазин": "shop", "🚫 Снять значок": "unequip",
-    CLAIM_LABEL: "claim", "💳 Баланс": "balance",
-    "➕ Трек": "adm_add", "📋 Заявки": "adm_queue", "🗂 Карточки": "adm_list",
-    "💿 Помощь": "adm_album", "🎧 Deezer": "adm_spotify", "🎟 Промокоды": "promos_menu",
+    "🎴 Карточки":"g_cards","💄 Косметика":"g_shop","💰 Монеты":"g_coins","🏆 Топ":"top",
+    "👤 Профиль":"home","❓ Помощь":"help","🛠 Админ":"g_admin","⭐ Подписка":"sub_menu",
+    "📢 Канал":"chsub_menu","🎁 Рефералы":"ref","🎤 Артисты":"artists","🎯 Квесты":"quests",
+    "🏅 Достижения":"ach","🏷 Титулы":"titles","👥 Друзья":"friends","◀ Назад":"back",
+    "🎲 Открыть":"g_open","📚 Коллекция":"coll","🔁 Обмен":"trade","💡 Предложить":"suggest",
+    "🎲 Крутить":"open:random","🛍 Магазин":"shop","🚫 Снять значок":"unequip",
+    CLAIM_LBL:"claim","💳 Баланс":"balance","➕ Трек":"adm_add","📋 Заявки":"adm_queue",
+    "🗂 Карточки":"adm_list","💿 Помощь":"adm_album","🎧 Deezer":"adm_spotify","🎟 Промокоды":"promos_menu",
 }
-ADMIN_ACTIONS = {"g_admin", "adm_add", "adm_queue", "adm_list", "adm_album", "adm_spotify", "promos_menu"}
+ADMIN_ACTIONS = {"g_admin","adm_add","adm_queue","adm_list","adm_album","adm_spotify","promos_menu"}
 NAV = {}
 
-
 def keyboard(uid, name):
-    rows = [list(r) for r in KEYBOARDS[name]]
-    if name == "main" and is_admin(uid):
-        rows.append(["🛠 Админ"])
+    rows = [list(r) for r in KBS[name]]
+    if name == "main" and is_admin(uid): rows.append(["🛠 Админ"])
     return reply_kb(rows)
 
-
-def goto(chat_id, uid, name, text, private=True):
+def goto(cid, uid, name, text, priv=True):
     NAV[uid] = name
-    send(chat_id, text, keyboard(uid, name) if private else None)
+    send(cid, text, keyboard(uid, name) if priv else None)
 
-
-def send_home(chat_id, uid, private=True):
+def send_home(cid, uid, priv=True):
     NAV[uid] = "main"
     text = profile_text(uid)
-    markup = keyboard(uid, "main") if private else None
+    markup = keyboard(uid, "main") if priv else None
     media = get_setting("welcome_media")
     if media:
-        kind, _, fid = media.partition(":")
-        send_media(chat_id, kind, fid, text, markup)
-    else:
-        send(chat_id, text, markup)
-
+        k, _, fid = media.partition(":"); send_media(cid, k, fid, text, markup)
+    else: send(cid, text, markup)
 
 def cards_text(uid):
     u = get_user(uid)
-    return (f"🎴 <b>Карточки</b>\n\nОткрытие: <b>{OPEN_COST}</b> монет\n"
-            f"💰 Баланс: <b>{u['coins']}</b>")
-
+    return f"🎴 <b>Карточки</b>\nЦена: <b>{OPEN_COST}</b>\n💰 {u['coins']}"
 
 def open_text(uid):
     u = get_user(uid)
-    return (f"🎲 <b>Крутить?</b>\nЦена: {OPEN_COST} · баланс: {u['coins']}\n"
-            f"🎯 Гарант: 🟡 через {pity_left(u['pity_leg'], PITY_LEGENDARY)} · "
-            f"🟣 через {pity_left(u['pity_epic'], PITY_EPIC)}")
-
+    return (f"🎲 Крутить? Цена: {OPEN_COST} · баланс: {u['coins']}\n"
+            f"🎯 🟡 {pity_left(u['pity_leg'], PITY_L)} · 🟣 {pity_left(u['pity_epic'], PITY_E)}")
 
 def coins_text(uid):
-    u = get_user(uid)
-    mult = sub_multiplier(u)
-    base_amount = int(CLAIM_AMOUNT * mult)
-    bonus = int(CLAIM_BONUS * mult)
-    max_amount = int(max_claim_amount() * mult)
+    u = get_user(uid); mult = sub_mult(u)
+    ba = int(CLAIM_AMOUNT * mult); bn = int(CLAIM_BONUS * mult); mx = int(max_claim() * mult)
     if not u["last_claim"]:
-        return (f"💰 <b>Монеты</b>\n\nБаланс: <b>{u['coins']}</b>\n\n"
-                f"✅ Первый сбор: <b>{base_amount}</b> — забирай!\n\n"
-                f"Далее +{bonus}/час, максимум {max_amount} за {CLAIM_MAX_SECONDS // 3600} ч.")
+        return f"💰 <b>Монеты</b>\nБаланс: <b>{u['coins']}</b>\n✅ Первый сбор: <b>{ba}</b>"
     el = time.time() - u["last_claim"]
     if el < CLAIM_SECONDS:
-        return (f"💰 <b>Монеты</b>\n\nБаланс: <b>{u['coins']}</b>\n\n"
-                f"⏳ Первые {base_amount} через {fmt_wait(CLAIM_SECONDS - el)}\n\n"
-                f"Далее +{bonus}/час, максимум {max_amount} за {CLAIM_MAX_SECONDS // 3600} ч.")
-    amount, nxt, maxed = claim_info(u["last_claim"])
-    tail = (f"Максимум: {max_amount} за {CLAIM_MAX_SECONDS // 3600} ч.\n"
-            f"Начисление: +{bonus}/час.\n\nОткрытие: {OPEN_COST}")
-    if maxed:
-        return (f"💰 <b>Монеты</b>\n\nБаланс: <b>{u['coins']}</b>\n\n"
-                f"✅ Накоплено: <b>{amount}</b> (макс)\n🔒 Забери, чтобы копилось снова\n\n{tail}")
-    return (f"💰 <b>Монеты</b>\n\nБаланс: <b>{u['coins']}</b>\n\n"
-            f"✅ Накоплено: <b>{amount}</b>\n⏳ Ещё +{bonus} через {fmt_wait(nxt)}\n\n{tail}")
-
+        return f"💰 <b>Монеты</b>\nБаланс: <b>{u['coins']}</b>\n⏳ Через {fmt_wait(CLAIM_SECONDS-el)} — {ba}"
+    amt, nxt, mxed = claim_info(u["last_claim"])
+    tail = f"Далее +{bn}/час, макс {mx}"
+    if mxed: return f"💰 <b>Монеты</b>\nБаланс: <b>{u['coins']}</b>\n✅ <b>{amt}</b> (макс)\n{tail}"
+    return f"💰 <b>Монеты</b>\nБаланс: <b>{u['coins']}</b>\n✅ <b>{amt}</b>\n⏳ +{bn} через {fmt_wait(nxt)}"
 
 def shop_menu(uid):
     u = get_user(uid)
     owned = {r["item"] for r in db.execute("SELECT item FROM owned_cosmetics WHERE user_id=?", (uid,))}
-    lines = ["💄 <b>Косметика</b>", "Значок рядом с именем.",
-             f"💰 Баланс: <b>{u['coins']}</b>", ""]
-    buttons = []
-    for k, (emoji, name, price) in COSMETICS.items():
-        if u["equipped"] == k:
-            label = f"🟢{emoji}"
-        elif k in owned:
-            label = f"✅{emoji}"
-        else:
-            label = f"{emoji} {price}"
-        lines.append(f"{emoji} {name} — {price}")
-        buttons.append(btn(label, f"cs:{k}"))
-    rows = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
-    rows.append([btn("🚫 Снять значок", "cs:off")])
+    lines = ["💄 <b>Косметика</b>", f"💰 {u['coins']}", ""]
+    bs = []
+    for k, (e, n, p) in COSMETICS.items():
+        if u["equipped"] == k: lbl = f"🟢{e}"
+        elif k in owned: lbl = f"✅{e}"
+        else: lbl = f"{e} {p}"
+        lines.append(f"{e} {n} — {p}")
+        bs.append(btn(lbl, f"cs:{k}"))
+    rows = [bs[i:i+3] for i in range(0, len(bs), 3)] + [[btn("🚫 Снять", "cs:off")]]
     return "\n".join(lines), kb(rows)
 
+HELP = ("🎧 <b>Музыкальные карточки</b>\n\n"
+        "/claim · /open · /cards · /artists · /ref\n"
+        "/promo КОД · /trade · /user @ник · /suggest\n\n"
+        "🎧 Импорт: <code>/spotify ссылка_deezer.com</code>")
 
-HELP = (
-    "🎧 <b>Музыкальные карточки</b>\n\n"
-    "🎴 Карточки · 📚 Коллекция · 🎲 Крутить\n"
-    "🎤 Артисты · 🏆 Топ · 👤 Профиль\n"
-    "💰 Монеты · ⭐ Подписка · 📢 Каналы\n"
-    "🎁 Рефералы · 🎯 Квесты · 🏅 Достижения\n"
-    "🏷 Титулы · 👥 Друзья\n\n"
-    "/claim · /open · /cards · /artists · /ref\n"
-    "/promo КОД — активировать промокод\n"
-    "/trade @ник мой_id чужой_id · /user @ник · /suggest\n\n"
-    "🎧 Импорт: <code>/spotify ссылка_с_deezer.com</code>"
-)
-
-
-# ───────────────────────── МОНЕТЫ ─────────────────────────
-
+# ── МОНЕТЫ ──
 def do_claim(uid):
-    u = get_user(uid)
-    amount, nxt, _maxed = claim_info(u["last_claim"])
-    if amount <= 0:
-        return False, 0, u["coins"], nxt
-    db.execute("UPDATE users SET coins = coins + ?, last_claim = ? WHERE user_id = ?",
-               (amount, int(time.time()), uid))
-    db.commit()
-    return True, amount, u["coins"] + amount, 0
-
+    u = get_user(uid); amt, nxt, _ = claim_info(u["last_claim"])
+    if amt <= 0: return False, 0, u["coins"], nxt
+    db.execute("UPDATE users SET coins=coins+?, last_claim=? WHERE user_id=?", (amt, int(time.time()), uid))
+    db.commit(); return True, amt, u["coins"] + amt, 0
 
 def cmd_claim(m, args):
-    ok, amount, coins, wait = do_claim(m["from"]["id"])
-    if ok:
-        send(m["chat"]["id"], f"✅ +{amount} монет! Баланс: <b>{coins}</b>")
-    else:
-        send(m["chat"]["id"], f"⏳ Подожди {fmt_wait(wait)}. Баланс: {coins}")
+    ok, amt, coins, w = do_claim(m["from"]["id"])
+    if ok: send(m["chat"]["id"], f"✅ +{amt}! Баланс: <b>{coins}</b>")
+    else: send(m["chat"]["id"], f"⏳ {fmt_wait(w)}. Баланс: {coins}")
 
-
-# ───────────────────────── ОТКРЫТИЕ ─────────────────────────
-
-def do_open(uid, chat_id):
+# ── ОТКРЫТИЕ ──
+def do_open(uid, cid):
     u = get_user(uid)
-    if u["coins"] < OPEN_COST:
-        send(chat_id, f"💸 Нужно {OPEN_COST}, у тебя {u['coins']}.")
-        return
+    if u["coins"] < OPEN_COST: send(cid, f"💸 {OPEN_COST} нужно"); return
     rars = [r[0] for r in db.execute("SELECT DISTINCT rarity FROM cards")]
-    if not rars:
-        send(chat_id, "Нет карточек.")
-        return
-    pl, pe = u["pity_leg"], u["pity_epic"]
-    forced = None
-    if pl >= PITY_LEGENDARY - 1 and "legendary" in rars:
-        forced = "legendary"
-    elif pe >= PITY_EPIC - 1 and "epic" in rars:
-        forced = "epic"
-    rarity = forced or random.choices(rars, weights=[RARITIES[r][0] for r in rars])[0]
-    if rarity == "legendary":
-        pl, pe = 0, 0
-    elif rarity == "epic":
-        pl, pe = pl + 1, 0
-    else:
-        pl, pe = pl + 1, pe + 1
-    card = db.execute("SELECT * FROM cards WHERE rarity=? ORDER BY RANDOM() LIMIT 1", (rarity,)).fetchone()
-    db.execute("UPDATE users SET coins = coins - ?, pity_leg = ?, pity_epic = ? WHERE user_id=?",
-               (OPEN_COST, pl, pe, uid))
-    add_card(uid, card["id"], 1)
-    db.commit()
-    qty = qty_of(uid, card["id"])
-    balance = u["coins"] - OPEN_COST
+    if not rars: send(cid, "Нет карточек"); return
+    pl, pe = u["pity_leg"], u["pity_epic"]; forced = None
+    if pl >= PITY_L - 1 and "legendary" in rars: forced = "legendary"
+    elif pe >= PITY_E - 1 and "epic" in rars: forced = "epic"
+    rar = forced or random.choices(rars, weights=[RARITIES[r][0] for r in rars])[0]
+    if rar == "legendary": pl, pe = 0, 0
+    elif rar == "epic": pl, pe = pl+1, 0
+    else: pl, pe = pl+1, pe+1
+    card = db.execute("SELECT * FROM cards WHERE rarity=? ORDER BY RANDOM() LIMIT 1", (rar,)).fetchone()
+    db.execute("UPDATE users SET coins=coins-?, pity_leg=?, pity_epic=? WHERE user_id=?", (OPEN_COST, pl, pe, uid))
+    add_card(uid, card["id"], 1); db.commit()
+    qty = qty_of(uid, card["id"]); bal = u["coins"] - OPEN_COST
     r = RARITIES[card["rarity"]]
-    note = "🆕 Новая!" if qty == 1 else f"Дубликат ×{qty}"
-    caption = (f"{r[1]} <b>{r[2]}</b>\n"
-               f"🎵 {esc(card['title'])}\n👤 {esc(card['artist'])}\n💿 {esc(card['album'])}\n"
-               f"ID: <code>{card['id']}</code>\n{note}\n"
-               + ("🎯 Сработал гарант!\n" if forced else "")
-               + f"💰 Баланс: {balance}\n"
-               f"🎯 🟡 через {pity_left(pl, PITY_LEGENDARY)} · 🟣 через {pity_left(pe, PITY_EPIC)}")
-    res = send_media(chat_id, "photo", card["image"], caption)
+    note = "🆕!" if qty == 1 else f"×{qty}"
+    cap = (f"{r[1]} <b>{r[2]}</b>\n🎵 {esc(card['title'])}\n👤 {esc(card['artist'])}\n"
+           f"💿 {esc(card['album'])}\nID: <code>{card['id']}</code>\n{note}\n"
+           + ("🎯 Гарант!\n" if forced else "")
+           + f"💰 {bal}\n🎯 🟡 {pity_left(pl,PITY_L)} · 🟣 {pity_left(pe,PITY_E)}")
+    res = send_media(cid, "photo", card["image"], cap)
     img = card["image"]
     if img and img.startswith("http") and isinstance(res, dict) and res.get("photo"):
-        db.execute("UPDATE cards SET image=? WHERE image=?", (res["photo"][-1]["file_id"], img))
-        db.commit()
-    q1 = progress_quest(uid, "open3", 1)
-    q2 = progress_quest(uid, "open5", 1)
-    q3 = progress_quest(uid, "qty5", 1)
-    notify_quests(chat_id, q1 + q2 + q3)
-    notify_achievements(chat_id, check_achievements(uid))
-
+        db.execute("UPDATE cards SET image=? WHERE image=?", (res["photo"][-1]["file_id"], img)); db.commit()
+    for q in ("open3","open5","qty5"):
+        notify_quests(cid, prog_quest(uid, q, 1))
+    notify_ach(cid, check_ach(uid))
 
 def cmd_open(m, args):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
-    goto(chat_id, uid, "open", open_text(uid), m["chat"].get("type") == "private")
+    goto(m["chat"]["id"], m["from"]["id"], "open", open_text(m["from"]["id"]), m["chat"].get("type")=="private")
 
-
-# ───────────────────────── КОЛЛЕКЦИЯ ─────────────────────────
-
-CARD_CTX = {}
-
+# ── КОЛЛЕКЦИЯ ──
+CTX = {}
 
 def cards_page(uid, rar, page):
-    CARD_CTX[uid] = (rar, page)
+    CTX[uid] = (rar, page)
     where, args = "i.user_id=?", [uid]
-    if rar != "all":
-        where += " AND c.rarity=?"
-        args.append(rar)
+    if rar != "all": where += " AND c.rarity=?"; args.append(rar)
     base = f"FROM inventory i JOIN cards c ON c.id=i.card_id WHERE {where}"
     n = db.execute(f"SELECT COUNT(*) {base}", args).fetchone()[0]
-    pages = max(1, (n + PAGE - 1) // PAGE)
-    page = min(max(page, 0), pages - 1)
-    rows = db.execute(
-        f"SELECT c.id, c.title, c.artist, c.album, c.rarity, i.qty {base} "
-        f"ORDER BY {RARITY_ORDER_SQL.format(c='c.rarity')}, c.artist, c.title LIMIT ? OFFSET ?",
-        args + [PAGE, page * PAGE],
-    ).fetchall()
-    uniq, qty = db.execute("SELECT COUNT(*), COALESCE(SUM(qty),0) FROM inventory WHERE user_id=?",
-                           (uid,)).fetchone()
-    flt = f"\nФильтр: {RARITIES[rar][1]} {RARITIES[rar][3]}" if rar != "all" else ""
-    head = f"📚 <b>Коллекция</b>: {uniq} треков ({qty} шт.){flt}\n\n👇 Нажми на карточку"
-    lines = [head, ""]
-    if not rows:
-        lines.append("Пусто.")
-
-    def go(rr, p):
-        return f"cp:{rr}:{p}"
-
-    card_buttons = []
+    pages = max(1, (n+PAGE-1)//PAGE); page = min(max(page,0), pages-1)
+    rows = db.execute(f"SELECT c.id,c.title,c.artist,c.album,c.rarity,i.qty {base} "
+                      f"ORDER BY {RARITY_SQL.format(c='c.rarity')}, c.artist LIMIT ? OFFSET ?",
+                      args + [PAGE, page*PAGE]).fetchall()
+    uniq, qty = db.execute("SELECT COUNT(*), COALESCE(SUM(qty),0) FROM inventory WHERE user_id=?", (uid,)).fetchone()
+    flt = f" · {RARITIES[rar][1]}" if rar != "all" else ""
+    lines = [f"📚 <b>Коллекция</b>: {uniq} треков ({qty} шт.){flt}", "", "👇 Нажми на карточку"]
+    if not rows: lines.append("Пусто.")
+    def go(rr, p): return f"cp:{rr}:{p}"
+    cbs = []
     for r in rows:
         e = RARITIES[r["rarity"]][1]
-        label = f"{e} {r['title']} — {r['artist']} ×{r['qty']}"
-        card_buttons.append([btn(label[:60], f"vc:{r['id']}")])
-    nav = [btn("◀", go(rar, page - 1) if page > 0 else "noop"),
-           btn(f"{page + 1}/{pages}", "noop"),
-           btn("▶", go(rar, page + 1) if page < pages - 1 else "noop")]
-    rar_row = [btn("Все", go("all", 0))] + [btn(v[1], go(k, 0)) for k, v in RARITIES.items()]
-    return "\n".join(lines), kb([nav] + card_buttons + [rar_row])
-
+        cbs.append([btn(f"{e} {r['title']} — {r['artist']} ×{r['qty']}"[:60], f"vc:{r['id']}")])
+    nav = [btn("◀", go(rar, page-1) if page > 0 else "noop"),
+           btn(f"{page+1}/{pages}", "noop"),
+           btn("▶", go(rar, page+1) if page < pages-1 else "noop")]
+    rr = [btn("Все", go("all",0))] + [btn(v[1], go(k,0)) for k,v in RARITIES.items()]
+    return "\n".join(lines), kb([nav] + cbs + [rr])
 
 def cmd_cards(m, args):
-    text, markup = cards_page(m["from"]["id"], "all", 0)
-    send(m["chat"]["id"], text, markup)
-
+    t, mk = cards_page(m["from"]["id"], "all", 0); send(m["chat"]["id"], t, mk)
 
 def cb_cards_page(cq, parts):
-    if len(parts) != 3 or not parts[2].lstrip("-").isdigit():
-        answer_cb(cq["id"])
-        return
+    if len(parts) != 3 or not parts[2].lstrip("-").isdigit(): answer_cb(cq["id"]); return
     rar, page = parts[1], int(parts[2])
-    if rar != "all" and rar not in RARITIES:
-        answer_cb(cq["id"])
-        return
-    text, markup = cards_page(cq["from"]["id"], rar, page)
-    edit_menu(cq, text, markup)
-    answer_cb(cq["id"])
+    if rar != "all" and rar not in RARITIES: answer_cb(cq["id"]); return
+    t, mk = cards_page(cq["from"]["id"], rar, page); edit_menu(cq, t, mk); answer_cb(cq["id"])
 
-
-def cb_view_card(cq, card_id):
-    uid = cq["from"]["id"]
-    msg = cq.get("message") or {}
-    chat_id = msg.get("chat", {}).get("id", uid)
-    card = get_card(card_id)
-    if not card:
-        answer_cb(cq["id"], "Не найдена.", True)
-        return
-    qty = qty_of(uid, card_id)
-    if qty < 1:
-        answer_cb(cq["id"], "У тебя нет такой.", True)
-        return
+def cb_view_card(cq, cid):
+    uid = cq["from"]["id"]; msg = cq.get("message") or {}
+    chat_id = msg.get("chat",{}).get("id", uid)
+    card = get_card(cid)
+    if not card: answer_cb(cq["id"], "Нет.", True); return
+    q = qty_of(uid, cid)
+    if q < 1: answer_cb(cq["id"], "У тебя нет.", True); return
     r = RARITIES[card["rarity"]]
-    caption = (f"{r[1]} <b>{r[2]}</b>\n\n🎵 <b>{esc(card['title'])}</b>\n"
-               f"👤 {esc(card['artist'])}\n💿 {esc(card['album'])}\n"
-               f"ID: <code>{card['id']}</code>\n🎁 У тебя: ×{qty}")
-    markup = kb([[btn("◀ К коллекции", "back_cards")]])
-    send_media(chat_id, "photo", card["image"], caption, markup)
+    cap = (f"{r[1]} <b>{r[2]}</b>\n\n🎵 <b>{esc(card['title'])}</b>\n👤 {esc(card['artist'])}\n"
+           f"💿 {esc(card['album'])}\nID: <code>{card['id']}</code>\n🎁 ×{q}")
+    send_media(chat_id, "photo", card["image"], cap, kb([[btn("◀", "back_cards")]]))
     answer_cb(cq["id"])
-
 
 def cb_back_cards(cq):
-    uid = cq["from"]["id"]
-    msg = cq.get("message") or {}
-    chat_id = msg.get("chat", {}).get("id", uid)
-    rar, page = CARD_CTX.get(uid, ("all", 0))
-    text, markup = cards_page(uid, rar, page)
-    send(chat_id, text, markup)
-    answer_cb(cq["id"])
+    uid = cq["from"]["id"]; msg = cq.get("message") or {}
+    chat_id = msg.get("chat",{}).get("id", uid)
+    rar, page = CTX.get(uid, ("all",0))
+    t, mk = cards_page(uid, rar, page); send(chat_id, t, mk); answer_cb(cq["id"])
 
-
-# ───────────────────────── ТОП ─────────────────────────
-
-def top_block(label, rarity):
+# ── ТОП ──
+def top_block(label, rar):
     rows = db.execute(
-        "SELECT u.user_id AS uid, u.name AS name, u.equipped AS eq, SUM(i.qty) AS n "
+        "SELECT u.user_id uid, u.name name, u.equipped eq, SUM(i.qty) n "
         "FROM inventory i JOIN cards c ON c.id=i.card_id JOIN users u ON u.user_id=i.user_id "
         "WHERE (? IS NULL OR c.rarity=?) GROUP BY u.user_id ORDER BY n DESC LIMIT 10",
-        (rarity, rarity)).fetchall()
+        (rar, rar)).fetchall()
     lines = [f"<b>{label}</b>"]
-    if not rows:
-        lines.append("пока пусто")
-    medals = ["🥇", "🥈", "🥉"]
+    if not rows: lines.append("пусто")
+    med = ["🥇","🥈","🥉"]
     for i, r in enumerate(rows):
-        mark = medals[i] if i < 3 else f"{i + 1}."
+        m = med[i] if i < 3 else f"{i+1}."
         nl = f'<a href="tg://user?id={r["uid"]}">{esc(r["name"])}</a>'
-        lines.append(f"{mark} {badge(r['eq'])}{nl} — {r['n']}")
+        lines.append(f"{m} {badge(r['eq'])}{nl} — {r['n']}")
     lines.append("")
     return lines, rows
 
-
 def cmd_top(m, args):
-    chat_id = m["chat"]["id"]
-    lines = ["🏆 <b>Рейтинги</b>\n"]
-    buttons = []
-    for label, rarity in [("Всего", None), ("⚪ Обычных", "common"), ("🟡 Легендарных", "legendary")]:
-        blines, rows = top_block(label, rarity)
-        lines += blines
-        medals = ["🥇", "🥈", "🥉"]
+    cid = m["chat"]["id"]; lines = ["🏆 <b>Рейтинги</b>\n"]; bs = []
+    for lbl, rar in [("Всего",None),("⚪",  "common"),("🟡","legendary")]:
+        bl, rows = top_block(lbl, rar); lines += bl
         for i, r in enumerate(rows[:3]):
-            nm = (r["name"] or "")[:16]
-            buttons.append(btn(f"{medals[i]} {nm}", f"vp:{r['uid']}"))
-    rows_kb = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
-    send_long(chat_id, lines, kb(rows_kb) if rows_kb else None)
+            bs.append(btn(f"{['🥇','🥈','🥉'][i]} {(r['name'] or '')[:16]}", f"vp:{r['uid']}"))
+    send_long(cid, lines, kb([bs[i:i+3] for i in range(0, len(bs), 3)]) if bs else None)
 
-
-def cb_view_profile(cq, target_uid):
-    uid = cq["from"]["id"]
-    msg = cq.get("message") or {}
-    chat_id = msg.get("chat", {}).get("id", uid)
-    if target_uid == uid:
-        answer_cb(cq["id"], "Это твой профиль 🙂", True)
-        return
-    if not get_user(target_uid):
-        answer_cb(cq["id"], "Не найден.", True)
-        return
-    markup = kb([[btn("🔄 Обновить", f"vp:{target_uid}")]])
-    send(chat_id, profile_text(target_uid), markup)
-    answer_cb(cq["id"])
-
+def cb_view_profile(cq, tgt):
+    uid = cq["from"]["id"]; cid = (cq.get("message") or {}).get("chat",{}).get("id", uid)
+    if tgt == uid: answer_cb(cq["id"], "Твой 🙂", True); return
+    if not get_user(tgt): answer_cb(cq["id"], "Нет.", True); return
+    send(cid, profile_text(tgt), kb([[btn("🔄", f"vp:{tgt}")]])); answer_cb(cq["id"])
 
 def cmd_view_user(m, args):
-    chat_id = m["chat"]["id"]
-    a = (args or "").strip()
-    if not a:
-        send(chat_id, "Формат: <code>/user @ник</code>")
-        return
-    if a.startswith("@"):
-        u = db.execute("SELECT * FROM users WHERE username=?", (a[1:].lower(),)).fetchone()
-    elif a.lstrip("-").isdigit():
-        u = get_user(int(a))
-    else:
-        u = db.execute("SELECT * FROM users WHERE username=?", (a.lower(),)).fetchone()
-    if not u:
-        send(chat_id, "Не найден.")
-        return
-    if u["user_id"] == m["from"]["id"]:
-        send(chat_id, "Это ты 🙂 /start")
-        return
-    send(chat_id, profile_text(u["user_id"]))
+    cid = m["chat"]["id"]; a = (args or "").strip()
+    if not a: send(cid, "/user @ник"); return
+    if a.startswith("@"): u = db.execute("SELECT * FROM users WHERE username=?", (a[1:].lower(),)).fetchone()
+    elif a.lstrip("-").isdigit(): u = get_user(int(a))
+    else: u = db.execute("SELECT * FROM users WHERE username=?", (a.lower(),)).fetchone()
+    if not u: send(cid, "Нет"); return
+    if u["user_id"] == m["from"]["id"]: send(cid, "Это ты 🙂 /start"); return
+    send(cid, profile_text(u["user_id"]))
 
-
-# ───────────────────────── КОСМЕТИКА ─────────────────────────
-
+# ── КОСМЕТИКА ──
 def cb_cosmetic(cq, item):
-    uid = cq["from"]["id"]
-    u = get_user(uid)
-    toast = None
+    uid = cq["from"]["id"]; u = get_user(uid); t = None
     if item == "off":
-        db.execute("UPDATE users SET equipped=NULL WHERE user_id=?", (uid,))
-        db.commit()
-        toast = "Снято."
+        db.execute("UPDATE users SET equipped=NULL WHERE user_id=?", (uid,)); db.commit(); t = "Снято."
     elif item in COSMETICS:
-        emoji, name, price = COSMETICS[item]
+        e, n, p = COSMETICS[item]
         has = db.execute("SELECT 1 FROM owned_cosmetics WHERE user_id=? AND item=?", (uid, item)).fetchone()
         if has:
-            db.execute("UPDATE users SET equipped=? WHERE user_id=?", (item, uid))
-            db.commit()
-            toast = f"Надето: {emoji} {name}"
-        elif u["coins"] < price:
-            answer_cb(cq["id"], f"Нужно {price}, у тебя {u['coins']}.", True)
-            return
+            db.execute("UPDATE users SET equipped=? WHERE user_id=?", (item, uid)); db.commit(); t = f"Надето: {e}"
+        elif u["coins"] < p: answer_cb(cq["id"], f"Нужно {p}", True); return
         else:
-            db.execute("UPDATE users SET coins=coins-?, equipped=? WHERE user_id=?", (price, item, uid))
-            db.execute("INSERT INTO owned_cosmetics(user_id, item) VALUES(?,?)", (uid, item))
-            db.commit()
-            toast = f"Куплено: {emoji} {name}"
-    text, markup = shop_menu(uid)
-    edit_menu(cq, text, markup)
-    answer_cb(cq["id"], toast)
-
+            db.execute("UPDATE users SET coins=coins-?, equipped=? WHERE user_id=?", (p, item, uid))
+            db.execute("INSERT INTO owned_cosmetics(user_id,item) VALUES(?,?)", (uid, item))
+            db.commit(); t = f"Куплено: {e}"
+    text, mk = shop_menu(uid); edit_menu(cq, text, mk); answer_cb(cq["id"], t)
 
 def cmd_shop(m, args):
-    text, markup = shop_menu(m["from"]["id"])
-    send(m["chat"]["id"], text, markup)
+    t, mk = shop_menu(m["from"]["id"]); send(m["chat"]["id"], t, mk)
 
-
-# ───────────────────────── ОБМЕН ─────────────────────────
-
-TRADE_USAGE = ("<code>/trade @ник мой_id чужой_id</code>\n"
-               "или ответом: <code>/trade мой_id чужой_id</code>")
-
+# ── ОБМЕН ──
+TRADE_USAGE = "<code>/trade @ник мой чужой</code> или ответом <code>/trade мой чужой</code>"
 
 def trade_text(t):
-    return (f"🔁 <b>{esc(who_label(t['from_id']))}</b> предлагает обмен:\n\n"
-            f"Он отдаёт: {title_of(get_card(t['from_card']))}\n"
+    return (f"🔁 <b>{esc(who(t['from_id']))}</b>:\n\nОн отдаёт: {title_of(get_card(t['from_card']))}\n"
             f"Ты отдаёшь: {title_of(get_card(t['to_card']))}")
 
-
 def cmd_trade(m, args):
-    chat_id, me = m["chat"]["id"], m["from"]["id"]
-    parts = args.split()
-    reply_user = (m.get("reply_to_message") or {}).get("from")
-    target = None
-    if len(parts) == 2 and all(p.isdigit() for p in parts) and reply_user:
-        target = get_user(reply_user["id"])
-        my_card, their_card = int(parts[0]), int(parts[1])
-    elif len(parts) == 3 and parts[0].startswith("@") and parts[1].isdigit() and parts[2].isdigit():
-        target = db.execute("SELECT * FROM users WHERE username=?", (parts[0][1:].lower(),)).fetchone()
-        my_card, their_card = int(parts[1]), int(parts[2])
-    else:
-        send(chat_id, TRADE_USAGE)
-        return
-    if my_card == their_card:
-        send(chat_id, "Нельзя одну и ту же.")
-        return
-    if not target:
-        send(chat_id, "Игрок не найден.")
-        return
-    if target["user_id"] == me:
-        send(chat_id, "Нельзя с собой.")
-        return
-    if qty_of(me, my_card) < 1:
-        send(chat_id, "У тебя нет карточки.")
-        return
-    if qty_of(target["user_id"], their_card) < 1:
-        send(chat_id, "У него нет такой.")
-        return
-    cur = db.execute("INSERT INTO trades(from_id, to_id, from_card, to_card, status, created) "
-                     "VALUES(?,?,?,?, 'pending', ?)",
-                     (me, target["user_id"], my_card, their_card, int(time.time())))
-    db.commit()
-    tid = cur.lastrowid
+    cid, me = m["chat"]["id"], m["from"]["id"]
+    p = args.split(); rp = (m.get("reply_to_message") or {}).get("from"); tgt = None
+    if len(p) == 2 and all(x.isdigit() for x in p) and rp:
+        tgt = get_user(rp["id"]); mc, tc = int(p[0]), int(p[1])
+    elif len(p) == 3 and p[0].startswith("@") and p[1].isdigit() and p[2].isdigit():
+        tgt = db.execute("SELECT * FROM users WHERE username=?", (p[0][1:].lower(),)).fetchone()
+        mc, tc = int(p[1]), int(p[2])
+    else: send(cid, TRADE_USAGE); return
+    if mc == tc: send(cid, "Одинаковые."); return
+    if not tgt: send(cid, "Игрок не найден."); return
+    if tgt["user_id"] == me: send(cid, "С собой."); return
+    if qty_of(me, mc) < 1: send(cid, "Нет у тебя."); return
+    if qty_of(tgt["user_id"], tc) < 1: send(cid, "Нет у него."); return
+    cur = db.execute("INSERT INTO trades(from_id,to_id,from_card,to_card,status,created) VALUES(?,?,?,?,'pending',?)",
+                     (me, tgt["user_id"], mc, tc, int(time.time())))
+    db.commit(); tid = cur.lastrowid
     t = db.execute("SELECT * FROM trades WHERE id=?", (tid,)).fetchone()
-    markup = kb([[btn("✅ Принять", f"t:y:{tid}"), btn("❌ Нет", f"t:n:{tid}")]])
-    try:
-        send(target["user_id"], trade_text(t), markup)
-    except TgError:
-        db.execute("UPDATE trades SET status='failed' WHERE id=?", (tid,))
-        db.commit()
-        send(chat_id, "Не доставить.")
-        return
-    send(chat_id, "📨 Отправлено.")
-
+    mk = kb([[btn("✅ Принять", f"t:y:{tid}"), btn("❌ Нет", f"t:n:{tid}")]])
+    try: send(tgt["user_id"], trade_text(t), mk)
+    except TgErr:
+        db.execute("UPDATE trades SET status='failed' WHERE id=?", (tid,)); db.commit()
+        send(cid, "Не доставить."); return
+    send(cid, "📨 Отправлено.")
 
 def cb_trade(cq, action, tid):
     t = db.execute("SELECT * FROM trades WHERE id=?", (tid,)).fetchone()
-    if not t or t["status"] != "pending":
-        answer_cb(cq["id"], "Неактуально.", True)
-        return
-    if cq["from"]["id"] != t["to_id"]:
-        answer_cb(cq["id"], "Не для тебя.", True)
-        return
-    if time.time() - t["created"] > TRADE_TTL:
-        status, line = "expired", "⌛ Истекло."
-    elif action == "n":
-        status, line = "declined", "❌ Отклонено."
+    if not t or t["status"] != "pending": answer_cb(cq["id"], "Неактуально.", True); return
+    if cq["from"]["id"] != t["to_id"]: answer_cb(cq["id"], "Не для тебя.", True); return
+    if time.time() - t["created"] > TRADE_TTL: st, line = "expired", "⌛ Истекло."
+    elif action == "n": st, line = "declined", "❌ Отклонено."
     elif qty_of(t["from_id"], t["from_card"]) < 1 or qty_of(t["to_id"], t["to_card"]) < 1:
-        status, line = "failed", "⚠️ Карточки уже нет."
+        st, line = "failed", "⚠️ Карточка пропала."
     else:
         try:
-            add_card(t["from_id"], t["from_card"], -1)
-            add_card(t["to_id"], t["from_card"], 1)
-            add_card(t["to_id"], t["to_card"], -1)
-            add_card(t["from_id"], t["to_card"], 1)
-            status, line = "accepted", "✅ Обмен выполнен!"
-        except Exception:
-            db.rollback()
-            raise
-    db.execute("UPDATE trades SET status=? WHERE id=?", (status, tid))
-    if status == "accepted":
-        db.execute("UPDATE users SET trades_ok = trades_ok + 1 WHERE user_id IN (?,?)",
-                   (t["from_id"], t["to_id"]))
+            add_card(t["from_id"], t["from_card"], -1); add_card(t["to_id"], t["from_card"], 1)
+            add_card(t["to_id"], t["to_card"], -1); add_card(t["from_id"], t["to_card"], 1)
+            st, line = "accepted", "✅ Обмен выполнен!"
+        except Exception: db.rollback(); raise
+    db.execute("UPDATE trades SET status=? WHERE id=?", (st, tid))
+    if st == "accepted":
+        db.execute("UPDATE users SET trades_ok=trades_ok+1 WHERE user_id IN (?,?)", (t["from_id"], t["to_id"]))
     db.commit()
-    edit_menu(cq, trade_text(t) + f"\n\n{line}")
-    answer_cb(cq["id"])
-    notice = {"accepted": "✅ Твой обмен принят!", "declined": "❌ Отклонили.",
-              "expired": "⌛ Истекло.", "failed": "⚠️ Не получилось."}[status]
-    try:
-        send(t["from_id"], notice)
-    except TgError:
-        pass
-    if status == "accepted":
-        notify_achievements(t["from_id"], check_achievements(t["from_id"]))
-        notify_achievements(t["to_id"],   check_achievements(t["to_id"]))
-        notify_quests(t["from_id"], progress_quest(t["from_id"], "trade1", 1))
-        notify_quests(t["to_id"],   progress_quest(t["to_id"], "trade1", 1))
+    edit_menu(cq, trade_text(t) + f"\n\n{line}"); answer_cb(cq["id"])
+    notice = {"accepted":"✅ Принят!","declined":"❌ Отклонили.","expired":"⌛ Истекло.","failed":"⚠️ Нет."}[st]
+    try: send(t["from_id"], notice)
+    except TgErr: pass
+    if st == "accepted":
+        notify_ach(t["from_id"], check_ach(t["from_id"]))
+        notify_ach(t["to_id"], check_ach(t["to_id"]))
+        notify_quests(t["from_id"], prog_quest(t["from_id"], "trade1", 1))
+        notify_quests(t["to_id"], prog_quest(t["to_id"], "trade1", 1))
 
-
-# ───────────────────────── СОСТОЯНИЯ ─────────────────────────
-
+# ── СОСТОЯНИЯ ──
 STATE = {}
-TEXT_STEPS = ["title", "artist", "album"]
-PROMPTS = {"title": "Название трека?", "artist": "Кто исполнитель?", "album": "Из какого альбома?"}
-
+TSTEPS = ["title","artist","album"]
+PROMPTS = {"title":"Название трека?","artist":"Кто исполнитель?","album":"Из какого альбома?"}
 
 def rarity_rows(make):
     b = [btn(f"{v[1]} {v[2]}", make(k)) for k, v in RARITIES.items()]
     return [b[:2], b[2:]]
 
-
 def cmd_cancel(m, args):
-    STATE.pop(m["from"]["id"], None)
-    send(m["chat"]["id"], "Отменено.")
-
+    STATE.pop(m["from"]["id"], None); send(m["chat"]["id"], "Отменено.")
 
 def cmd_skip(m, args):
     st = STATE.get(m["from"]["id"])
     if st and st["flow"] == "add" and st["step"] == "photo":
-        st["data"]["image"] = None
-        st["step"] = "title"
-        send(m["chat"]["id"], PROMPTS["title"])
-
+        st["data"]["image"] = None; st["step"] = "title"; send(m["chat"]["id"], PROMPTS["title"])
 
 def on_state(m, st):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
-    flow, step, data = st["flow"], st["step"], st["data"]
+    uid, cid = m["from"]["id"], m["chat"]["id"]
+    flow, step, d = st["flow"], st["step"], st["data"]
     text = (m.get("text") or "").strip()
     if step == "photo":
         if m.get("photo"):
-            data["image"] = m["photo"][-1]["file_id"]
-            st["step"] = "title"
-            send(chat_id, PROMPTS["title"])
+            d["image"] = m["photo"][-1]["file_id"]; st["step"] = "title"; send(cid, PROMPTS["title"])
         else:
-            extra = " Без картинки — /skip." if flow == "add" else ""
-            send(chat_id, f"Нужно фото.{extra} Отмена — /cancel.")
-    elif step in TEXT_STEPS:
-        if not text:
-            send(chat_id, "Текстом. Отмена — /cancel.")
-            return
-        data[step] = text[:80]
-        nxt = TEXT_STEPS.index(step) + 1
-        if nxt < len(TEXT_STEPS):
-            st["step"] = TEXT_STEPS[nxt]
-            send(chat_id, PROMPTS[st["step"]])
+            ex = " /skip без картинки." if flow == "add" else ""
+            send(cid, f"Нужно фото.{ex} /cancel")
+    elif step in TSTEPS:
+        if not text: send(cid, "Текстом. /cancel"); return
+        d[step] = text[:80]
+        nxt = TSTEPS.index(step) + 1
+        if nxt < len(TSTEPS): st["step"] = TSTEPS[nxt]; send(cid, PROMPTS[st["step"]])
         else:
             if flow == "add":
-                st["step"] = "rarity"
-                send(chat_id, "Выбери редкость:", kb(rarity_rows(lambda k: f"ac:{k}")))
+                st["step"] = "rarity"; send(cid, "Редкость:", kb(rarity_rows(lambda k: f"ac:{k}")))
             else:
-                STATE.pop(uid, None)
-                finish_suggest(uid, chat_id, data)
-    elif step == "rarity":
-        send(chat_id, "Выбери кнопкой выше.")
+                STATE.pop(uid, None); finish_suggest(uid, cid, d)
+    elif step == "rarity": send(cid, "Кнопкой выше.")
 
-
-def cb_add_rarity(cq, rarity):
-    uid = cq["from"]["id"]
-    msg = cq.get("message") or {}
-    chat_id, mid = msg.get("chat", {}).get("id", uid), msg.get("message_id")
+def cb_add_rarity(cq, rar):
+    uid = cq["from"]["id"]; msg = cq.get("message") or {}
+    cid, mid = msg.get("chat",{}).get("id", uid), msg.get("message_id")
     st = STATE.get(uid)
-    if not st or st["flow"] != "add" or st["step"] != "rarity" or rarity not in RARITIES:
-        answer_cb(cq["id"], "Неактуально.")
-        return
-    d = st["data"]
-    STATE.pop(uid, None)
+    if not st or st["flow"] != "add" or st["step"] != "rarity" or rar not in RARITIES:
+        answer_cb(cq["id"], "?"); return
+    d = st["data"]; STATE.pop(uid, None)
     aid = ensure_artist(d["artist"])
-    cid = insert_card(d["title"], d["artist"], d["album"], rarity, d.get("image"), aid)
-    if mid:
-        clear_markup(chat_id, mid)
-    if cid:
-        send(chat_id, f"✅ Карточка #{cid}: {RARITIES[rarity][1]} {esc(d['title'])}")
-    else:
-        send(chat_id, "Уже есть.")
+    cid2 = insert_card(d["title"], d["artist"], d["album"], rar, d.get("image"), aid)
+    if mid: clear_kb(cid, mid)
+    if cid2: send(cid, f"✅ #{cid2}: {RARITIES[rar][1]} {esc(d['title'])}")
+    else: send(cid, "Уже есть.")
     answer_cb(cq["id"])
 
-
-# ───────────────────────── ЗАЯВКИ ─────────────────────────
-
-def start_suggest(uid, chat_id, chat_type):
-    if chat_type != "private":
-        send(chat_id, "Только в личке.")
-        return
+# ── ЗАЯВКИ ──
+def start_suggest(uid, cid, ctype):
+    if ctype != "private": send(cid, "Только в ЛС."); return
     n = db.execute("SELECT COUNT(*) FROM submissions WHERE user_id=? AND status='pending'", (uid,)).fetchone()[0]
-    if n >= 3:
-        send(chat_id, "Уже 3 заявки.")
-        return
+    if n >= 3: send(cid, "Уже 3 заявки."); return
     STATE[uid] = {"flow": "sug", "step": "photo", "data": {}}
-    send(chat_id, "🖼 Пришли обложку.\nОтмена — /cancel.")
-
+    send(cid, "🖼 Пришли обложку. /cancel")
 
 def cmd_suggest(m, args):
     start_suggest(m["from"]["id"], m["chat"]["id"], m["chat"].get("type"))
 
+def sub_cap(r):
+    return (f"📥 <b>Заявка #{r['id']}</b>\nТрек: {esc(r['title'])}\nИсполнитель: {esc(r['artist'])}\n"
+            f"Альбом: {esc(r['album'])}\nОт: {esc(who(r['user_id']))}")
 
-def sub_caption(r):
-    return (f"📥 <b>Заявка #{r['id']}</b>\n"
-            f"Трек: {esc(r['title'])}\nИсполнитель: {esc(r['artist'])}\n"
-            f"Альбом: {esc(r['album'])}\nОт: {esc(who_label(r['user_id']))}")
+def send_sub(cid, r):
+    mk = kb(rarity_rows(lambda k: f"sa:{r['id']}:{k}") + [[btn("❌ Отклонить", f"sr:{r['id']}")]])
+    try: tg("sendPhoto", chat_id=cid, photo=r["image"], caption=sub_cap(r) + "\n\nРедкость:",
+           parse_mode="HTML", reply_markup=mk)
+    except TgErr as e: say(f"sub fail: {e}")
 
-
-def send_submission(chat_id, r):
-    markup = kb(rarity_rows(lambda k: f"sa:{r['id']}:{k}") + [[btn("❌ Отклонить", f"sr:{r['id']}")]])
-    try:
-        tg("sendPhoto", chat_id=chat_id, photo=r["image"],
-           caption=sub_caption(r) + "\n\nВыбери редкость:", parse_mode="HTML", reply_markup=markup)
-    except TgError as e:
-        say(f"не отправить заявку: {e}")
-
-
-def finish_suggest(uid, chat_id, d):
-    cur = db.execute("INSERT INTO submissions(user_id, title, artist, album, image, status, created) "
-                     "VALUES(?,?,?,?,?, 'pending', ?)",
+def finish_suggest(uid, cid, d):
+    cur = db.execute("INSERT INTO submissions(user_id,title,artist,album,image,status,created) VALUES(?,?,?,?,?,'pending',?)",
                      (uid, d["title"], d["artist"], d["album"], d["image"], int(time.time())))
     db.commit()
     row = db.execute("SELECT * FROM submissions WHERE id=?", (cur.lastrowid,)).fetchone()
-    send(chat_id, "📨 Отправлено на проверку.")
-    for admin_id in ADMIN_IDS:
-        send_submission(admin_id, row)
+    send(cid, "📨 Отправлено на проверку.")
+    for a in ADMIN_IDS: send_sub(a, row)
 
-
-def cb_submission(cq, parts):
-    approve = parts[0] == "sa"
-    sub_id = int(parts[1])
-    s = db.execute("SELECT * FROM submissions WHERE id=?", (sub_id,)).fetchone()
+def cb_sub(cq, parts):
+    approve = parts[0] == "sa"; sid = int(parts[1])
+    s = db.execute("SELECT * FROM submissions WHERE id=?", (sid,)).fetchone()
     if not s or s["status"] != "pending":
         answer_cb(cq["id"], "Уже обработано.", True)
+        msg = cq.get("message") or {}
+        if msg.get("chat") and msg.get("message_id"): clear_kb(msg["chat"]["id"], msg["message_id"])
         return
     if approve:
-        rarity = parts[2] if len(parts) > 2 else ""
-        if rarity not in RARITIES:
-            answer_cb(cq["id"])
-            return
+        rar = parts[2] if len(parts) > 2 else ""
+        if rar not in RARITIES: answer_cb(cq["id"]); return
         aid = ensure_artist(s["artist"])
-        cid = insert_card(s["title"], s["artist"], s["album"], rarity, s["image"], aid)
-        if cid:
-            status, admin_line = "approved", f"✅ Одобрено: #{cid}"
-            user_msg = f"🎉 Твой трек «{esc(s['title'])}» одобрен!"
+        cid2 = insert_card(s["title"], s["artist"], s["album"], rar, s["image"], aid)
+        if cid2:
+            st, al = "approved", f"✅ #{cid2}"
+            um = f"🎉 «{esc(s['title'])}» одобрен!"
         else:
-            status, admin_line = "rejected", "⚠️ Уже есть."
-            user_msg = f"«{esc(s['title'])}» уже есть."
+            st, al = "rejected", "⚠️ Уже есть."
+            um = f"«{esc(s['title'])}» уже есть."
     else:
-        status, admin_line = "rejected", "❌ Отклонено"
-        user_msg = f"😔 «{esc(s['title'])}» отклонили."
-    db.execute("UPDATE submissions SET status=? WHERE id=?", (status, sub_id))
-    db.commit()
-    edit_menu(cq, sub_caption(s) + f"\n\n{admin_line}")
-    try:
-        send(s["user_id"], user_msg)
-    except TgError:
-        pass
+        st, al = "rejected", "❌ Отклонено"
+        um = f"😔 «{esc(s['title'])}» отклонили."
+    db.execute("UPDATE submissions SET status=? WHERE id=?", (st, sid)); db.commit()
+    edit_menu(cq, sub_cap(s) + f"\n\n{al}")
+    try: send(s["user_id"], um)
+    except TgErr: pass
     answer_cb(cq["id"])
 
-
-# ───────────────────────── АДМИН ─────────────────────────
-
+# ── АДМИН ──
 def panel_text():
-    pending = db.execute("SELECT COUNT(*) FROM submissions WHERE status='pending'").fetchone()[0]
-    n_cards = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
-    n_users = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    n_artists = db.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
-    n_promos = db.execute("SELECT COUNT(*) FROM promocodes").fetchone()[0]
-    n_stars = db.execute("SELECT COALESCE(SUM(stars),0) FROM payments").fetchone()[0]
-    ch1 = get_setting("sub_channel") or "—"
-    ch2 = get_setting("sub_channel2") or "—"
-    return (f"🛠 <b>Админ-панель</b>\n\n"
-            f"👥 Игроков: {n_users}\n🎵 Карточек: {n_cards}\n🎤 Артистов: {n_artists}\n"
-            f"🎟 Промокодов: {n_promos}\n"
-            f"📋 Заявок: {pending}\n⭐ Звёзд: {n_stars}\n"
-            f"📢 Канал #1: <code>{esc(ch1)}</code>\n"
-            f"📣 Канал #2: <code>{esc(ch2)}</code>")
-
+    p = db.execute("SELECT COUNT(*) FROM submissions WHERE status='pending'").fetchone()[0]
+    c = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
+    u = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    a = db.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
+    pr = db.execute("SELECT COUNT(*) FROM promocodes").fetchone()[0]
+    st = db.execute("SELECT COALESCE(SUM(stars),0) FROM payments").fetchone()[0]
+    return (f"🛠 <b>Админ</b>\n\n👥 {u}\n🎵 {c}\n🎤 {a}\n🎟 {pr}\n📋 {p}\n⭐ {st}\n"
+            f"📢 #1: <code>{esc(get_setting('sub_channel') or '—')}</code>\n"
+            f"📣 #2: <code>{esc(get_setting('sub_channel2') or '—')}</code>")
 
 def cmd_admin(m, args):
-    if not is_admin(m["from"]["id"]):
-        send(m["chat"]["id"], "Только для админа.")
-        return
-    goto(m["chat"]["id"], m["from"]["id"], "admin", panel_text(), m["chat"].get("type") == "private")
-
+    if not is_admin(m["from"]["id"]): send(m["chat"]["id"], "Только админ."); return
+    goto(m["chat"]["id"], m["from"]["id"], "admin", panel_text(), m["chat"].get("type")=="private")
 
 def admin_list_page(page):
     size = 20
     n = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
-    pages = max(1, (n + size - 1) // size)
-    page = min(max(page, 0), pages - 1)
-    rows = db.execute("SELECT * FROM cards ORDER BY artist, album, title LIMIT ? OFFSET ?",
-                      (size, page * size)).fetchall()
-    lines = [f"🗂 <b>Все карточки ({n})</b>\n"]
+    pages = max(1, (n+size-1)//size); page = min(max(page,0), pages-1)
+    rows = db.execute("SELECT * FROM cards ORDER BY artist,album,title LIMIT ? OFFSET ?", (size, page*size)).fetchall()
+    lines = [f"🗂 <b>Карточки ({n})</b>", ""]
     for r in rows:
-        lines.append(f"<code>{r['id']}</code> {RARITIES[r['rarity']][1]} "
-                     f"{esc(r['title'])} — {esc(r['artist'])} <i>({esc(r['album'])})</i>")
-    lines.append("\nУдалить: <code>/delcard ID</code>")
-    nav = [btn("◀", f"al:{page - 1}" if page > 0 else "noop"),
-           btn(f"{page + 1}/{pages}", "noop"),
-           btn("▶", f"al:{page + 1}" if page < pages - 1 else "noop")]
+        lines.append(f"<code>{r['id']}</code> {RARITIES[r['rarity']][1]} {esc(r['title'])} — {esc(r['artist'])}")
+    lines.append("\n/delcard ID")
+    nav = [btn("◀", f"al:{page-1}" if page>0 else "noop"),
+           btn(f"{page+1}/{pages}", "noop"),
+           btn("▶", f"al:{page+1}" if page<pages-1 else "noop")]
     return "\n".join(lines), kb([nav])
 
-
-def admin_action(chat_id, uid, action):
+def admin_action(cid, uid, action):
     if action == "adm_add":
         STATE[uid] = {"flow": "add", "step": "photo", "data": {}}
-        send(chat_id, "Отправь обложку.\nБез картинки — /skip, отмена — /cancel.")
+        send(cid, "Обложку. /skip /cancel")
     elif action == "adm_list":
-        text, markup = admin_list_page(0)
-        send(chat_id, text, markup)
-    elif action == "adm_album":
-        send(chat_id, ALBUM_HELP)
-    elif action == "adm_spotify":
-        send(chat_id, IMPORT_HELP)
+        t, mk = admin_list_page(0); send(cid, t, mk)
+    elif action == "adm_album": send(cid, ALBUM_HELP)
+    elif action == "adm_spotify": send(cid, IMPORT_HELP)
     elif action == "adm_queue":
         rows = db.execute("SELECT * FROM submissions WHERE status='pending' ORDER BY id LIMIT 5").fetchall()
-        if not rows:
-            send(chat_id, "Заявок нет 🎉")
-        for r in rows:
-            send_submission(chat_id, r)
+        if not rows: send(cid, "Заявок нет 🎉")
+        for r in rows: send_sub(cid, r)
     elif action == "promos_menu":
-        send(chat_id,
-             "🎟 <b>Промокоды</b>\n\n"
-             "<code>/addpromo КОД 5000 [кол-во]</code> — создать\n"
-             "<code>/delpromo КОД</code> — удалить\n"
-             "<code>/promos</code> — список всех")
-
+        send(cid, "🎟 <b>Промокоды</b>\n\n/addpromo КОД 5000 [кол]\n/delpromo КОД\n/promos")
 
 def cmd_clearcards(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
     n = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
-    send(chat_id, f"⚠️ Удалить <b>ВСЕ</b> карточки ({n})?",
-         kb([[btn("🗑 Да", "cc:y"), btn("Отмена", "cc:n")]]))
+    send(cid, f"⚠️ Удалить всё ({n})?", kb([[btn("🗑 Да","cc:y"), btn("Отмена","cc:n")]]))
 
-
-def cb_clearcards(cq, answer):
-    if answer == "y":
-        db.execute("DELETE FROM inventory")
-        db.execute("DELETE FROM cards")
+def cb_clearcards(cq, a):
+    if a == "y":
+        db.execute("DELETE FROM inventory"); db.execute("DELETE FROM cards")
         db.execute("DELETE FROM sqlite_sequence WHERE name='cards'")
         db.execute("UPDATE trades SET status='failed' WHERE status='pending'")
-        db.commit()
-        edit_menu(cq, "🗑 Все карточки удалены.")
-    else:
-        edit_menu(cq, "Отменено.")
+        db.commit(); edit_menu(cq, "🗑 Удалено.")
+    else: edit_menu(cq, "Отменено.")
     answer_cb(cq["id"])
 
-
 def cmd_delcard(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
-    if not args.strip().isdigit():
-        send(chat_id, "Формат: <code>/delcard ID</code>")
-        return
-    card = get_card(int(args.strip()))
-    if not card:
-        send(chat_id, "Нет такой.")
-        return
-    db.execute("DELETE FROM inventory WHERE card_id=?", (card["id"],))
-    db.execute("DELETE FROM cards WHERE id=?", (card["id"],))
-    db.commit()
-    send(chat_id, f"🗑 Удалено: {title_of(card)}")
-
-
-def photo_id_of(m):
-    if m.get("photo"):
-        return m["photo"][-1]["file_id"]
-    rp = m.get("reply_to_message") or {}
-    if rp.get("photo"):
-        return rp["photo"][-1]["file_id"]
-    return None
-
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
+    if not args.strip().isdigit(): send(cid, "/delcard ID"); return
+    c = get_card(int(args.strip()))
+    if not c: send(cid, "Нет."); return
+    db.execute("DELETE FROM inventory WHERE card_id=?", (c["id"],))
+    db.execute("DELETE FROM cards WHERE id=?", (c["id"],)); db.commit()
+    send(cid, f"🗑 {title_of(c)}")
 
 def cmd_addtrack(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
     p = [x.strip() for x in args.split("|")]
     if len(p) < 4 or not all(p[:3]) or p[3].lower() not in RARITIES:
-        send(chat_id, "Формат: <code>/addtrack Название | Артист | Альбом | редкость</code>")
-        return
+        send(cid, "/addtrack Название | Артист | Альбом | редкость"); return
     aid = ensure_artist(p[1])
-    cid = insert_card(p[0], p[1], p[2], p[3].lower(), photo_id_of(m), aid)
-    send(chat_id, f"✅ Карточка #{cid}" if cid else "Уже есть.")
+    cid2 = insert_card(p[0], p[1], p[2], p[3].lower(), photo_of(m), aid)
+    send(cid, f"✅ #{cid2}" if cid2 else "Уже есть.")
 
+ALBUM_HELP = ("💿 <code>/addalbum Артист | Альбом | редкость | трек1; трек2 [epic]</code> + фото\n"
+              "<code>/setcover Артист | Альбом</code> + фото\n"
+              "<code>/delalbum Артист | Альбом</code> · <code>/delcard ID</code> · <code>/clearcards</code>\n"
+              "<code>/addartist Имя | описание</code> + фото\n"
+              "<code>/artists</code> · <code>/delartist ID</code>\n"
+              "<code>/setwelcome</code> + медиа · off\n"
+              "<code>/givecoins @ник 500</code>\n"
+              "<code>/spotify ссылка_deezer.com</code>")
 
 def cmd_addalbum(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
     p = [x.strip() for x in args.split("|", 3)]
     if len(p) < 4 or not p[0] or not p[1] or p[2].lower() not in RARITIES:
-        send(chat_id, ALBUM_HELP)
-        return
-    artist, album, default_r = p[0][:80], p[1][:80], p[2].lower()
-    image = photo_id_of(m)
-    aid = ensure_artist(artist, image=image)
-    added = skipped = 0
-    for raw in p[3].replace("\n", ";").split(";"):
+        send(cid, ALBUM_HELP); return
+    a, al, dr = p[0][:80], p[1][:80], p[2].lower()
+    img = photo_of(m); aid = ensure_artist(a, image=img)
+    added = skip = 0
+    for raw in p[3].replace("\n",";").split(";"):
         raw = raw.strip()
-        if not raw:
-            continue
-        rarity = default_r
+        if not raw: continue
+        rar = dr
         mt = re.match(r"^(.*?)\s*\[(common|rare|epic|legendary)\]\s*$", raw, re.I)
-        if mt:
-            raw, rarity = mt.group(1).strip(), mt.group(2).lower()
-        if insert_card(raw, artist, album, rarity, image, aid):
-            added += 1
-        else:
-            skipped += 1
-    send(chat_id, f"💿 {esc(artist)} — {esc(album)}: добавлено {added}"
-                  + (f", уже были {skipped}" if skipped else ""))
-
+        if mt: raw, rar = mt.group(1).strip(), mt.group(2).lower()
+        if insert_card(raw, a, al, rar, img, aid): added += 1
+        else: skip += 1
+    send(cid, f"💿 {esc(a)} — {esc(al)}: +{added}" + (f", дубли: {skip}" if skip else ""))
 
 def cmd_setcover(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
-    p = [x.strip() for x in args.split("|")]
-    image = photo_id_of(m)
-    if len(p) != 2 or not all(p) or not image:
-        send(chat_id, "Формат: фото с <code>/setcover Артист | Альбом</code>")
-        return
-    cur = db.execute("UPDATE cards SET image=? WHERE artist=? COLLATE NOCASE AND album=? COLLATE NOCASE",
-                     (image, p[0], p[1]))
-    db.commit()
-    send(chat_id, f"🖼 Обновлено у {cur.rowcount} треков.")
-
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
+    p = [x.strip() for x in args.split("|")]; img = photo_of(m)
+    if len(p) != 2 or not all(p) or not img: send(cid, "/setcover Артист | Альбом + фото"); return
+    cur = db.execute("UPDATE cards SET image=? WHERE artist=? COLLATE NOCASE AND album=? COLLATE NOCASE", (img, p[0], p[1]))
+    db.commit(); send(cid, f"🖼 {cur.rowcount} треков.")
 
 def cmd_delalbum(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
     p = [x.strip() for x in args.split("|")]
-    if len(p) != 2 or not all(p):
-        send(chat_id, "Формат: <code>/delalbum Артист | Альбом</code>")
-        return
-    ids = [r["id"] for r in db.execute(
-        "SELECT id FROM cards WHERE artist=? COLLATE NOCASE AND album=? COLLATE NOCASE",
-        (p[0], p[1]))]
-    for cid in ids:
-        db.execute("DELETE FROM inventory WHERE card_id=?", (cid,))
-        db.execute("DELETE FROM cards WHERE id=?", (cid,))
-    db.commit()
-    send(chat_id, f"🗑 Удалено: {len(ids)}")
-
+    if len(p) != 2 or not all(p): send(cid, "/delalbum Артист | Альбом"); return
+    ids = [r["id"] for r in db.execute("SELECT id FROM cards WHERE artist=? COLLATE NOCASE AND album=? COLLATE NOCASE", (p[0], p[1]))]
+    for c in ids:
+        db.execute("DELETE FROM inventory WHERE card_id=?", (c,))
+        db.execute("DELETE FROM cards WHERE id=?", (c,))
+    db.commit(); send(cid, f"🗑 {len(ids)}")
 
 def cmd_setwelcome(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
-    if args.strip().lower() == "off":
-        set_setting("welcome_media", None)
-        send(chat_id, "Убрано.")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
+    if args.strip().lower() == "off": set_setting("welcome_media", None); send(cid, "Убрано."); return
     for src in (m, m.get("reply_to_message") or {}):
-        if src.get("animation"):
-            media = ("animation", src["animation"]["file_id"])
-        elif src.get("photo"):
-            media = ("photo", src["photo"][-1]["file_id"])
-        elif src.get("video"):
-            media = ("video", src["video"]["file_id"])
-        else:
-            continue
-        set_setting("welcome_media", f"{media[0]}:{media[1]}")
-        send(chat_id, "✅ Обновлено.")
-        return
-    send(chat_id, "Отправь фото/гифку с <code>/setwelcome</code>. Убрать: off")
-
+        if src.get("animation"): media = ("animation", src["animation"]["file_id"])
+        elif src.get("photo"): media = ("photo", src["photo"][-1]["file_id"])
+        elif src.get("video"): media = ("video", src["video"]["file_id"])
+        else: continue
+        set_setting("welcome_media", f"{media[0]}:{media[1]}"); send(cid, "✅ Обновлено."); return
+    send(cid, "Фото/гифка с /setwelcome. off — убрать.")
 
 def cmd_givecoins(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
     p = args.split()
     if len(p) != 2 or not p[0].startswith("@") or not p[1].lstrip("-").isdigit():
-        send(chat_id, "Формат: <code>/givecoins @ник 500</code>")
-        return
+        send(cid, "/givecoins @ник 500"); return
     u = db.execute("SELECT * FROM users WHERE username=?", (p[0][1:].lower(),)).fetchone()
-    if not u:
-        send(chat_id, "Не найден.")
-        return
+    if not u: send(cid, "Нет."); return
     new = max(0, u["coins"] + int(p[1]))
-    db.execute("UPDATE users SET coins=? WHERE user_id=?", (new, u["user_id"]))
-    db.commit()
-    send(chat_id, f"💰 {esc(u['name'])}: {new}")
-
+    db.execute("UPDATE users SET coins=? WHERE user_id=?", (new, u["user_id"])); db.commit()
+    send(cid, f"💰 {esc(u['name'])}: {new}")
 
 def cmd_setrarity(m, args):
-    chat_id = m["chat"]["id"]
-    if not is_admin(m["from"]["id"]):
-        send(chat_id, "Только для админа.")
-        return
+    cid = m["chat"]["id"]
+    if not is_admin(m["from"]["id"]): send(cid, "Только админ."); return
     p = args.split()
     if len(p) != 2 or not p[0].isdigit() or p[1].lower() not in RARITIES:
-        send(chat_id, "Формат: <code>/setrarity ID редкость</code>")
-        return
-    card = get_card(int(p[0]))
-    if not card:
-        send(chat_id, "Не найдено.")
-        return
-    db.execute("UPDATE cards SET rarity=? WHERE id=?", (p[1].lower(), card["id"]))
-    db.commit()
-    send(chat_id, f"✅ {title_of(get_card(card['id']))}")
+        send(cid, "/setrarity ID редкость"); return
+    c = get_card(int(p[0]))
+    if not c: send(cid, "Нет."); return
+    db.execute("UPDATE cards SET rarity=? WHERE id=?", (p[1].lower(), c["id"])); db.commit()
+    send(cid, f"✅ {title_of(get_card(c['id']))}")
 
-
-# ───────────────────────── АВАТАР ─────────────────────────
-
+# ── АВАТАР ──
 def cmd_setavatar(m, args):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
-    arg = (args or "").strip()
-    if not arg.isdigit():
-        send(chat_id, "Формат: <code>/setavatar ID</code>")
-        return
-    card_id = int(arg)
-    if qty_of(uid, card_id) < 1:
-        send(chat_id, "Нет такой карточки.")
-        return
-    card = get_card(card_id)
-    if not card or not card["image"]:
-        send(chat_id, "У карточки нет картинки.")
-        return
-    db.execute("UPDATE users SET avatar_card=? WHERE user_id=?", (card_id, uid))
-    db.commit()
-    fr = frame_for(uid)
-    send(chat_id, f"{fr} ✅ Аватар: {title_of(card)}")
-
+    uid, cid = m["from"]["id"], m["chat"]["id"]
+    a = (args or "").strip()
+    if not a.isdigit(): send(cid, "/setavatar ID"); return
+    ci = int(a)
+    if qty_of(uid, ci) < 1: send(cid, "Нет такой."); return
+    c = get_card(ci)
+    if not c or not c["image"]: send(cid, "Нет картинки."); return
+    db.execute("UPDATE users SET avatar_card=? WHERE user_id=?", (ci, uid)); db.commit()
+    send(cid, f"{frame_for(uid)} ✅ {title_of(c)}")
 
 def cmd_delavatar(m, args):
     uid = m["from"]["id"]
-    db.execute("UPDATE users SET avatar_card=NULL WHERE user_id=?", (uid,))
-    db.commit()
-    send(m["chat"]["id"], "🗑 Аватар снят.")
-
+    db.execute("UPDATE users SET avatar_card=NULL WHERE user_id=?", (uid,)); db.commit()
+    send(m["chat"]["id"], "🗑 Снят.")
 
 def cmd_avatar(m, args):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
+    uid, cid = m["from"]["id"], m["chat"]["id"]
     u = get_user(uid)
-    if not u["avatar_card"]:
-        send(chat_id, "Аватара нет. Формат: <code>/setavatar ID</code>")
-        return
-    card = get_card(u["avatar_card"])
-    if not card:
-        send(chat_id, "Карточка удалена.")
-        return
-    fr = frame_for(uid)
-    send_media(chat_id, "photo", card["image"], f"{fr} Твой аватар: {title_of(card)}")
+    if not u["avatar_card"]: send(cid, "/setavatar ID"); return
+    c = get_card(u["avatar_card"])
+    if not c: send(cid, "Удалена."); return
+    send_media(cid, "photo", c["image"], f"{frame_for(uid)} {title_of(c)}")
 
-
-# ───────────────────────── КОМАНДЫ ─────────────────────────
-
+# ── КОМАНДЫ ──
 def cmd_start(m, args):
-    uid = m["from"]["id"]
-    a = (args or "").strip()
+    uid = m["from"]["id"]; a = (args or "").strip()
     if a.startswith("ref_"):
         u = get_user(uid)
-        if u and (time.time() - (u["joined"] or 0) < REFERRAL_MAX_AGE):
-            ok, ref_id = process_referral(uid, a)
+        if u and (time.time() - (u["joined"] or 0) < REF_AGE):
+            ok, rid = process_ref(uid, a)
             if ok:
-                ref_u = get_user(ref_id)
-                cnt = (ref_u["ref_count"] if ref_u else 1)
-                try:
-                    send(ref_id, f"🎉 <b>Новый реферал!</b>\n💰 +{REFERRAL_BONUS}\n👥 Всего: {cnt}")
-                except TgError:
-                    pass
-    send_home(m["chat"]["id"], uid, m["chat"].get("type") == "private")
+                ru = get_user(rid); cnt = (ru["ref_count"] if ru else 1)
+                try: send(rid, f"🎉 Реферал!\n💰 +{REF_BONUS}\n👥 {cnt}")
+                except TgErr: pass
+    send_home(m["chat"]["id"], uid, m["chat"].get("type")=="private")
 
-
-def cmd_help(m, args):
-    send(m["chat"]["id"], HELP)
-
+def cmd_help(m, args): send(m["chat"]["id"], HELP)
 
 COMMANDS = {
-    "start": cmd_start, "menu": cmd_start, "profile": cmd_start,
-    "help": cmd_help,
-    "claim": cmd_claim, "open": cmd_open, "cards": cmd_cards,
-    "shop": cmd_shop, "top": cmd_top,
+    "start": cmd_start, "menu": cmd_start, "profile": cmd_start, "help": cmd_help,
+    "claim": cmd_claim, "open": cmd_open, "cards": cmd_cards, "shop": cmd_shop, "top": cmd_top,
     "ref": cmd_ref, "subscribe": cmd_subscribe, "channelsub": cmd_channelsub,
     "user": cmd_view_user, "trade": cmd_trade, "suggest": cmd_suggest,
-    "quests": cmd_quests, "achievements": cmd_achievements, "titles": cmd_titles,
+    "quests": cmd_quests, "achievements": cmd_ach, "titles": cmd_titles,
     "friends": cmd_friends, "addfriend": cmd_addfriend, "delfriend": cmd_delfriend,
     "avatar": cmd_avatar, "setavatar": cmd_setavatar, "delavatar": cmd_delavatar,
-    "admin": cmd_admin,
-    "delcard": cmd_delcard, "addtrack": cmd_addtrack, "addalbum": cmd_addalbum,
+    "admin": cmd_admin, "delcard": cmd_delcard, "addtrack": cmd_addtrack, "addalbum": cmd_addalbum,
     "setcover": cmd_setcover, "delalbum": cmd_delalbum, "setwelcome": cmd_setwelcome,
     "givecoins": cmd_givecoins, "clearcards": cmd_clearcards,
     "spotify": cmd_spotify, "setrarity": cmd_setrarity,
@@ -2834,251 +1765,154 @@ COMMANDS = {
     "setartistcover": cmd_setartistcover,
     "setchannel": cmd_setchannel, "setchannel2": cmd_setchannel2,
     "setchreward": cmd_setchreward, "setchreward2": cmd_setchreward2,
-    "promo": cmd_promo, "addpromo": cmd_addpromo, "delpromo": cmd_delpromo,
-    "promos": cmd_promos,
+    "promo": cmd_promo, "addpromo": cmd_addpromo, "delpromo": cmd_delpromo, "promos": cmd_promos,
 }
 
-
 def on_button(m, action):
-    uid, chat_id = m["from"]["id"], m["chat"]["id"]
-    chat_type = m["chat"].get("type")
-    priv = chat_type == "private"
-    if action in ADMIN_ACTIONS and not is_admin(uid):
-        send(chat_id, "Только для админа.")
-        return
-    if action == "home":
-        send_home(chat_id, uid, priv)
+    uid, cid = m["from"]["id"], m["chat"]["id"]
+    priv = m["chat"].get("type") == "private"
+    if action in ADMIN_ACTIONS and not is_admin(uid): send(cid, "Только админ."); return
+    if action == "home": send_home(cid, uid, priv)
     elif action == "back":
-        if NAV.get(uid) == "open":
-            goto(chat_id, uid, "cards", cards_text(uid), priv)
-        else:
-            send_home(chat_id, uid, priv)
-    elif action == "g_cards":
-        goto(chat_id, uid, "cards", cards_text(uid), priv)
-    elif action == "g_open":
-        goto(chat_id, uid, "open", open_text(uid), priv)
-    elif action == "open:random":
-        do_open(uid, chat_id)
-    elif action == "coll":
-        cmd_cards(m, "")
-    elif action == "trade":
-        send(chat_id, TRADE_USAGE)
-    elif action == "suggest":
-        start_suggest(uid, chat_id, chat_type)
+        if NAV.get(uid) == "open": goto(cid, uid, "cards", cards_text(uid), priv)
+        else: send_home(cid, uid, priv)
+    elif action == "g_cards": goto(cid, uid, "cards", cards_text(uid), priv)
+    elif action == "g_open": goto(cid, uid, "open", open_text(uid), priv)
+    elif action == "open:random": do_open(uid, cid)
+    elif action == "coll": cmd_cards(m, "")
+    elif action == "trade": send(cid, TRADE_USAGE)
+    elif action == "suggest": start_suggest(uid, cid, m["chat"].get("type"))
     elif action == "g_shop":
-        goto(chat_id, uid, "shop", "💄 <b>Косметика</b>", priv)
-        send(chat_id, *shop_menu(uid))
-    elif action == "shop":
-        send(chat_id, *shop_menu(uid))
+        goto(cid, uid, "shop", "💄 <b>Косметика</b>", priv); send(cid, *shop_menu(uid))
+    elif action == "shop": send(cid, *shop_menu(uid))
     elif action == "unequip":
-        db.execute("UPDATE users SET equipped=NULL WHERE user_id=?", (uid,))
-        db.commit()
-        send(chat_id, "Снято.")
-    elif action == "g_coins":
-        goto(chat_id, uid, "coins", coins_text(uid), priv)
-    elif action == "claim":
-        cmd_claim(m, "")
-    elif action == "balance":
-        send(chat_id, coins_text(uid))
-    elif action == "top":
-        cmd_top(m, "")
-    elif action == "help":
-        cmd_help(m, "")
-    elif action == "ref":
-        cmd_ref(m, "")
-    elif action == "sub_menu":
-        cmd_subscribe(m, "")
-    elif action == "chsub_menu":
-        cmd_channelsub(m, "")
-    elif action == "artists":
-        cmd_artists(m, "")
-    elif action == "quests":
-        cmd_quests(m, "")
-    elif action == "ach":
-        cmd_achievements(m, "")
-    elif action == "titles":
-        cmd_titles(m, "")
-    elif action == "friends":
-        cmd_friends(m, "")
-    elif action == "g_admin":
-        goto(chat_id, uid, "admin", panel_text(), priv)
-    elif action in ADMIN_ACTIONS:
-        admin_action(chat_id, uid, action)
-
+        db.execute("UPDATE users SET equipped=NULL WHERE user_id=?", (uid,)); db.commit(); send(cid, "Снято.")
+    elif action == "g_coins": goto(cid, uid, "coins", coins_text(uid), priv)
+    elif action == "claim": cmd_claim(m, "")
+    elif action == "balance": send(cid, coins_text(uid))
+    elif action == "top": cmd_top(m, "")
+    elif action == "help": cmd_help(m, "")
+    elif action == "ref": cmd_ref(m, "")
+    elif action == "sub_menu": cmd_subscribe(m, "")
+    elif action == "chsub_menu": cmd_channelsub(m, "")
+    elif action == "artists": cmd_artists(m, "")
+    elif action == "quests": cmd_quests(m, "")
+    elif action == "ach": cmd_ach(m, "")
+    elif action == "titles": cmd_titles(m, "")
+    elif action == "friends": cmd_friends(m, "")
+    elif action == "g_admin": goto(cid, uid, "admin", panel_text(), priv)
+    elif action in ADMIN_ACTIONS: admin_action(cid, uid, action)
 
 def on_message(m):
     u = m.get("from")
-    if not u or u.get("is_bot"):
-        return
+    if not u or u.get("is_bot"): return
     ensure_user(u)
     if not STATE.get(u["id"]):
-        q = progress_quest(u["id"], "msg5", 1)
-        if q:
-            notify_quests(m["chat"]["id"], q)
+        q = prog_quest(u["id"], "msg5", 1)
+        if q: notify_quests(m["chat"]["id"], q)
     body = (m.get("text") or m.get("caption") or "").strip()
     if body.startswith("/"):
-        pieces = body.split(None, 1)
-        args = pieces[1] if len(pieces) > 1 else ""
-        cmd, _, suffix = pieces[0][1:].partition("@")
-        cmd = cmd.lower()
-        if suffix and BOT_USERNAME and suffix.lower() != BOT_USERNAME:
-            return
-        if cmd == "cancel":
-            cmd_cancel(m, args)
-        elif cmd == "skip":
-            cmd_skip(m, args)
+        p = body.split(None, 1); args = p[1] if len(p) > 1 else ""
+        cmd, _, suf = p[0][1:].partition("@"); cmd = cmd.lower()
+        if suf and BOT_USERNAME and suf.lower() != BOT_USERNAME: return
+        if cmd == "cancel": cmd_cancel(m, args)
+        elif cmd == "skip": cmd_skip(m, args)
         elif cmd in COMMANDS:
-            STATE.pop(u["id"], None)
-            COMMANDS[cmd](m, args)
+            STATE.pop(u["id"], None); COMMANDS[cmd](m, args)
         return
-    action = LABELS.get((m.get("text") or "").strip())
-    if action:
-        STATE.pop(u["id"], None)
-        on_button(m, action)
-        return
+    act = LABELS.get((m.get("text") or "").strip())
+    if act:
+        STATE.pop(u["id"], None); on_button(m, act); return
     st = STATE.get(u["id"])
-    if st:
-        on_state(m, st)
-
+    if st: on_state(m, st)
 
 def on_callback(cq):
     ensure_user(cq["from"])
     parts = (cq.get("data") or "").split(":")
-    kind = parts[0]
-    uid = cq["from"]["id"]
+    kind = parts[0]; uid = cq["from"]["id"]
 
     if kind == "chsub" and len(parts) == 3 and parts[1] == "check":
-        try:
-            slot = int(parts[2])
-        except ValueError:
-            answer_cb(cq["id"])
-            return
-        if slot in (1, 2):
-            cb_channelsub(cq, slot)
+        try: s = int(parts[2])
+        except: answer_cb(cq["id"]); return
+        if s in (1,2): cb_chsub(cq, s)
         return
     if kind == "ar" and len(parts) == 2:
-        if parts[1] == "list":
-            cb_artists_list(cq)
-        elif parts[1].isdigit():
-            cb_artist(cq, int(parts[1]))
+        if parts[1] == "list": cb_artists_list(cq)
+        elif parts[1].isdigit(): cb_artist(cq, int(parts[1]))
         return
     if kind == "vp" and len(parts) == 2 and parts[1].lstrip("-").isdigit():
-        cb_view_profile(cq, int(parts[1]))
-        return
+        cb_view_profile(cq, int(parts[1])); return
     if kind == "vc" and len(parts) == 2 and parts[1].isdigit():
-        cb_view_card(cq, int(parts[1]))
-        return
-    if kind == "back_cards":
-        cb_back_cards(cq)
-        return
+        cb_view_card(cq, int(parts[1])); return
+    if kind == "back_cards": cb_back_cards(cq); return
     if kind == "ref" and len(parts) == 2 and parts[1] == "refresh":
-        cmd_ref({"from": {"id": uid},
-                 "chat": {"id": (cq.get("message") or {}).get("chat", {}).get("id", uid)}}, "")
-        answer_cb(cq["id"])
-        return
-    if kind == "sub" and len(parts) >= 2:
-        cb_subscribe(cq, ":".join(parts[1:]))
-        return
-    if kind == "ti" and len(parts) == 2 and parts[1] in TITLES:
-        cb_title(cq, parts[1])
-        return
+        cmd_ref({"from": {"id": uid}, "chat": {"id": (cq.get("message") or {}).get("chat",{}).get("id", uid)}}, "")
+        answer_cb(cq["id"]); return
+    if kind == "sub" and len(parts) >= 2: cb_sub(cq, ":".join(parts[1:])); return
+    if kind == "ti" and len(parts) == 2 and parts[1] in TITLES: cb_title(cq, parts[1]); return
     if kind == "dza":
-        if not is_admin(uid):
-            answer_cb(cq["id"], "Нет доступа.", True)
-            return
-        cb_deezer(cq, parts)
-        return
-    if kind == "cs" and len(parts) == 2:
-        cb_cosmetic(cq, parts[1])
-    elif kind == "cp":
-        cb_cards_page(cq, parts)
-    elif kind == "t" and len(parts) == 3 and parts[2].isdigit():
-        cb_trade(cq, parts[1], int(parts[2]))
-    elif kind == "f" and len(parts) == 3 and parts[2].lstrip("-").isdigit():
-        cb_friend(cq, parts[1], int(parts[2]))
-    elif kind in ("ak", "ac", "sa", "sr", "al", "cc"):
-        if not is_admin(uid):
-            answer_cb(cq["id"], "Нет доступа.", True)
-            return
-        if kind == "ac" and len(parts) == 2:
-            cb_add_rarity(cq, parts[1])
-        elif kind == "cc" and len(parts) == 2:
-            cb_clearcards(cq, parts[1])
-        elif kind in ("sa", "sr") and len(parts) >= 2 and parts[1].isdigit():
-            cb_submission(cq, parts)
+        if not is_admin(uid): answer_cb(cq["id"], "Нет доступа.", True); return
+        cb_deezer(cq, parts); return
+    if kind == "cs" and len(parts) == 2: cb_cosmetic(cq, parts[1])
+    elif kind == "cp": cb_cards_page(cq, parts)
+    elif kind == "t" and len(parts) == 3 and parts[2].isdigit(): cb_trade(cq, parts[1], int(parts[2]))
+    elif kind == "f" and len(parts) == 3 and parts[2].lstrip("-").isdigit(): cb_friend(cq, parts[1], int(parts[2]))
+    elif kind in ("ak","ac","sa","sr","al","cc"):
+        if not is_admin(uid): answer_cb(cq["id"], "Нет доступа.", True); return
+        if kind == "ac" and len(parts) == 2: cb_add_rarity(cq, parts[1])
+        elif kind == "cc" and len(parts) == 2: cb_clearcards(cq, parts[1])
+        elif kind in ("sa","sr") and len(parts) >= 2 and parts[1].isdigit(): cb_sub(cq, parts)
         elif kind == "al" and len(parts) == 2 and parts[1].lstrip("-").isdigit():
-            text, markup = admin_list_page(int(parts[1]))
-            edit_menu(cq, text, markup)
-            answer_cb(cq["id"])
-    else:
-        answer_cb(cq["id"])
-
+            t, mk = admin_list_page(int(parts[1])); edit_menu(cq, t, mk); answer_cb(cq["id"])
+    else: answer_cb(cq["id"])
 
 def handle_update(u):
     if "message" in u:
         m = u["message"]
-        if m.get("successful_payment"):
-            on_successful_payment(m)
-            return
+        if m.get("successful_payment"): on_paid(m); return
         on_message(m)
-    elif "callback_query" in u:
-        on_callback(u["callback_query"])
-    elif "pre_checkout_query" in u:
-        on_pre_checkout(u["pre_checkout_query"])
-
+    elif "callback_query" in u: on_callback(u["callback_query"])
+    elif "pre_checkout_query" in u: on_pre_checkout(u["pre_checkout_query"])
 
 def main():
     global BOT_USERNAME
     init_db()
     say("▶ База готова")
-    me = tg("getMe")
-    BOT_USERNAME = (me.get("username") or "").lower()
-    say(f"▶ Бот подключён: @{me.get('username')}")
+    me = tg("getMe"); BOT_USERNAME = (me.get("username") or "").lower()
+    say(f"▶ Бот: @{me.get('username')}")
     try:
         tg("deleteWebhook")
         tg("setMyCommands", commands=[
-            {"command": "start", "description": "Профиль и меню"},
-            {"command": "claim", "description": "Забрать монеты"},
-            {"command": "open", "description": "Крутить карточку"},
-            {"command": "cards", "description": "Моя коллекция"},
+            {"command": "start", "description": "Меню"},
+            {"command": "claim", "description": "Монеты"},
+            {"command": "open", "description": "Крутить"},
+            {"command": "cards", "description": "Коллекция"},
             {"command": "artists", "description": "Артисты"},
-            {"command": "promo", "description": "Активировать промокод"},
+            {"command": "promo", "description": "Промокод"},
             {"command": "quests", "description": "Квесты"},
             {"command": "achievements", "description": "Достижения"},
             {"command": "titles", "description": "Титулы"},
             {"command": "friends", "description": "Друзья"},
             {"command": "shop", "description": "Косметика"},
             {"command": "ref", "description": "Рефералы"},
-            {"command": "subscribe", "description": "Подписки и донаты ⭐"},
+            {"command": "subscribe", "description": "Подписки и донаты"},
             {"command": "channelsub", "description": "Подписка на каналы"},
             {"command": "top", "description": "Рейтинги"},
             {"command": "help", "description": "Помощь"},
         ])
-    except Exception as e:
-        say(f"меню команд: {e}")
-    say("▶ Слушаю сообщения")
+    except Exception as e: say(f"menu: {e}")
+    say("▶ Слушаю")
     offset = None
     while True:
-        params = {"timeout": 25, "allowed_updates": ["message", "callback_query", "pre_checkout_query"]}
-        if offset:
-            params["offset"] = offset
-        try:
-            updates = tg("getUpdates", **params)
-        except TgError as e:
-            say(f"getUpdates: {e}")
-            time.sleep(5)
-            continue
-        except Exception as e:
-            say(f"сеть: {e!r}")
-            time.sleep(5)
-            continue
+        p = {"timeout": 25, "allowed_updates": ["message","callback_query","pre_checkout_query"]}
+        if offset: p["offset"] = offset
+        try: updates = tg("getUpdates", **p)
+        except TgErr as e: say(f"getUpdates: {e}"); time.sleep(5); continue
+        except Exception as e: say(f"сеть: {e!r}"); time.sleep(5); continue
         for u in updates:
             offset = u["update_id"] + 1
-            try:
-                handle_update(u)
-            except Exception:
-                say("❌ ошибка:\n" + traceback.format_exc())
-
+            try: handle_update(u)
+            except Exception: say("❌ " + traceback.format_exc())
 
 if __name__ == "__main__":
     main()
