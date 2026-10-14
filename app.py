@@ -1,5 +1,5 @@
 """
-Telegram-бот: музыкальные карточки. Deezer-импорт, промокоды, 2 канала.
+Telegram-бот: музыкальные карточки. Deezer-импорт, промокоды, 2 канала, МЕГА-донат.
 Стандартная библиотека Python.
 """
 import datetime as dt
@@ -83,6 +83,8 @@ SUB_PREMIUM_STARS = int(os.getenv("SUB_PREMIUM_STARS", "250"))
 SUB_DAYS = int(os.getenv("SUB_DAYS", "30"))
 SUB_BASIC_MULT = float(os.getenv("SUB_BASIC_MULT", "1.5"))
 SUB_PREMIUM_MULT = float(os.getenv("SUB_PREMIUM_MULT", "2.0"))
+MEGA_STARS = int(os.getenv("MEGA_STARS", "35"))
+MEGA_COINS = int(os.getenv("MEGA_COINS", "10000"))
 CHANNEL_REWARD = int(os.getenv("CHANNEL_REWARD", "2000"))
 CHANNEL2_REWARD = int(os.getenv("CHANNEL2_REWARD", "1500"))
 
@@ -429,7 +431,6 @@ def init_db():
         "trades_ok": "INTEGER NOT NULL DEFAULT 0",
     })
     ensure_columns("cards", {"artist_id": "INTEGER"})
-    # стартовый промокод
     db.execute("INSERT OR IGNORE INTO promocodes(code, reward, uses_left, created) VALUES(?,?,?,?)",
                ("PIZDEC", 20000, -1, int(time.time())))
     db.commit()
@@ -926,8 +927,7 @@ def cmd_addpromo(m, args):
         return
     parts = args.split()
     if len(parts) < 2 or not parts[1].isdigit():
-        send(chat_id, "Формат: <code>/addpromo КОД 5000 [кол-во_активаций]</code>\n"
-                      "Без 3-го числа — без ограничений.")
+        send(chat_id, "Формат: <code>/addpromo КОД 5000 [кол-во_активаций]</code>")
         return
     code = parts[0].strip().upper()
     reward = int(parts[1])
@@ -970,10 +970,6 @@ def cmd_promos(m, args):
     for r in rows:
         used = db.execute("SELECT COUNT(*) FROM promocode_uses WHERE code=?",
                           (r["code"],)).fetchone()[0]
-        if r["uses_left"] < 0:
-            limit = "∞"
-        else:
-            limit = f"{used}/∞"
         lines.append(f"<code>{esc(r['code'])}</code> — +{r['reward']} монет · активаций: {used}"
                      + ("" if r["uses_left"] < 0 else f" · осталось: {r['uses_left']}"))
     send_long(chat_id, lines)
@@ -1030,7 +1026,7 @@ def cmd_ref(m, args):
     send(chat_id, "\n".join(lines), markup)
 
 
-# ───────────────────────── ПОДПИСКИ STARS ─────────────────────────
+# ───────────────────────── ПОДПИСКИ STARS + МЕГА-ДОНАТ ─────────────────────────
 
 def is_subscribed(u):
     return bool(u and u["sub_until"] and u["sub_until"] > time.time())
@@ -1052,7 +1048,7 @@ def sub_tier_label(tier):
 
 def subscribe_text(uid):
     u = get_user(uid)
-    lines = ["⭐ <b>Подписки</b>", ""]
+    lines = ["⭐ <b>Подписки и донаты</b>", ""]
     if is_subscribed(u):
         until = dt.datetime.fromtimestamp(u["sub_until"]).strftime("%d.%m.%Y")
         lines.append(f"🟢 Активна: <b>{sub_tier_label(u['sub_tier'])}</b> до {until}\n")
@@ -1060,7 +1056,10 @@ def subscribe_text(uid):
     lines.append(f"   Множитель: <b>×{SUB_BASIC_MULT}</b>\n")
     lines.append(f"💎 <b>Premium</b> — {SUB_PREMIUM_STARS}⭐ / {SUB_DAYS} дней")
     lines.append(f"   Множитель: <b>×{SUB_PREMIUM_MULT}</b>\n")
-    lines.append("Множитель применяется к монетам за сбор.")
+    lines.append("💥 <b>МЕЕЕЕГАСУПЕРАКЦИИИЯ!!!!!!!</b>")
+    lines.append(f"   <b>{MEGA_COINS}</b> монет за <b>{MEGA_STARS}</b>⭐ — разово и сразу! 🐶🔥")
+    lines.append("")
+    lines.append("Множитель применяется к монетам за сбор. МЕГА-пакет — разовая покупка монет.")
     return "\n".join(lines)
 
 
@@ -1069,22 +1068,28 @@ def cmd_subscribe(m, args):
     markup = kb([
         [btn(f"💚 Basic · {SUB_BASIC_STARS}⭐", "sub:buy:basic")],
         [btn(f"💎 Premium · {SUB_PREMIUM_STARS}⭐", "sub:buy:premium")],
+        [btn(f"💥 МЕЕЕЕГАСУПЕРАКЦИИИЯ!!!!!!! · {MEGA_STARS}⭐", "sub:buy:mega")],
     ])
     send(chat_id, subscribe_text(uid), markup)
 
 
 def send_stars_invoice(chat_id, uid, tier):
     if tier == "basic":
-        stars, title, mult = SUB_BASIC_STARS, f"Basic ×{SUB_BASIC_MULT}", SUB_BASIC_MULT
+        stars, title = SUB_BASIC_STARS, f"Basic ×{SUB_BASIC_MULT}"
+        desc = f"Множитель монет ×{SUB_BASIC_MULT} на {SUB_DAYS} дней"
     elif tier == "premium":
-        stars, title, mult = SUB_PREMIUM_STARS, f"Premium ×{SUB_PREMIUM_MULT}", SUB_PREMIUM_MULT
+        stars, title = SUB_PREMIUM_STARS, f"Premium ×{SUB_PREMIUM_MULT}"
+        desc = f"Множитель монет ×{SUB_PREMIUM_MULT} на {SUB_DAYS} дней"
+    elif tier == "mega":
+        stars = MEGA_STARS
+        title = f"💥 МЕГАСУПЕРАКЦИЯ · {MEGA_COINS} монет"
+        desc = f"{MEGA_COINS} монет сразу в кошелёк! 🐶🔥 Охае, даттебаё, сабака кракена!"
     else:
         send(chat_id, "Неизвестный тариф.")
         return
     payload = f"sub|{tier}|{uid}|{int(time.time())}"
     try:
-        tg("sendInvoice", chat_id=chat_id, title=title,
-           description=f"Множитель монет ×{mult} на {SUB_DAYS} дней",
+        tg("sendInvoice", chat_id=chat_id, title=title, description=desc,
            payload=payload, currency="XTR",
            prices=[{"label": title, "amount": stars}])
     except TgError as e:
@@ -1099,6 +1104,7 @@ def cb_subscribe(cq, action):
         markup = kb([
             [btn(f"💚 Basic · {SUB_BASIC_STARS}⭐", "sub:buy:basic")],
             [btn(f"💎 Premium · {SUB_PREMIUM_STARS}⭐", "sub:buy:premium")],
+            [btn(f"💥 МЕЕЕЕГАСУПЕРАКЦИИИЯ!!!!!!! · {MEGA_STARS}⭐", "sub:buy:mega")],
         ])
         edit_menu(cq, subscribe_text(uid), markup)
         answer_cb(cq["id"])
@@ -1128,8 +1134,32 @@ def on_successful_payment(m):
         return
     parts = payload.split("|")
     tier = parts[1] if len(parts) >= 2 and parts[0] == "sub" else "premium"
-    if tier not in ("basic", "premium"):
+    if tier not in ("basic", "premium", "mega"):
         tier = "premium"
+
+    if tier == "mega":
+        db.execute("UPDATE users SET coins = coins + ? WHERE user_id=?", (MEGA_COINS, uid))
+        try:
+            db.execute("INSERT INTO payments(charge_id, user_id, tier, stars, days, created) "
+                       "VALUES(?,?,?,?,?,?)", (charge, uid, tier, amount, 0, int(time.time())))
+        except sqlite3.IntegrityError:
+            pass
+        db.commit()
+        bal = db.execute("SELECT coins FROM users WHERE user_id=?", (uid,)).fetchone()["coins"]
+        send(chat_id,
+             f"💥 <b>МЕЕЕЕГАСУПЕРАКЦИИИЯ АКТИВИРОВАНА!!!!!!!</b>\n\n"
+             f"💰 +<b>{MEGA_COINS}</b> монет\n"
+             f"🐶 Охае, даттебаё, сабака кракена!\n"
+             f"💳 Баланс: <b>{bal}</b>\n\n"
+             f"Крути карточки на все! 🔥🎴")
+        for admin_id in ADMIN_IDS:
+            try:
+                send(admin_id, f"💥 <b>МЕГА-ПОКУПКА</b>\nИгрок: {esc(who_label(uid))}\n"
+                               f"+{MEGA_COINS} монет за {amount}⭐")
+            except TgError:
+                pass
+        return
+
     u = get_user(uid)
     now = int(time.time())
     active_now = is_subscribed(u)
@@ -1153,7 +1183,7 @@ def on_successful_payment(m):
             pass
 
 
-# ───────────────────────── КАНАЛЫ (2 раздельные) ─────────────────────────
+# ───────────────────────── КАНАЛЫ ─────────────────────────
 
 CH_SLOTS = {
     1: {"setting": "sub_channel",  "reward_setting": "ch_reward",  "table": "channel_rewards",
@@ -2353,7 +2383,6 @@ def on_state(m, st):
             st["step"] = TEXT_STEPS[nxt]
             send(chat_id, PROMPTS[st["step"]])
         else:
-            # ФИКС: для flow="sug" сразу завершаем заявку (редкость назначает админ)
             if flow == "add":
                 st["step"] = "rarity"
                 send(chat_id, "Выбери редкость:", kb(rarity_rows(lambda k: f"ac:{k}")))
@@ -2528,8 +2557,7 @@ def admin_action(chat_id, uid, action):
              "🎟 <b>Промокоды</b>\n\n"
              "<code>/addpromo КОД 5000 [кол-во]</code> — создать\n"
              "<code>/delpromo КОД</code> — удалить\n"
-             "<code>/promos</code> — список всех\n\n"
-             "Сейчас активные промокоды можно посмотреть командой /promos.")
+             "<code>/promos</code> — список всех")
 
 
 def cmd_clearcards(m, args):
@@ -3021,7 +3049,7 @@ def main():
             {"command": "friends", "description": "Друзья"},
             {"command": "shop", "description": "Косметика"},
             {"command": "ref", "description": "Рефералы"},
-            {"command": "subscribe", "description": "Подписки ⭐"},
+            {"command": "subscribe", "description": "Подписки и донаты ⭐"},
             {"command": "channelsub", "description": "Подписка на каналы"},
             {"command": "top", "description": "Рейтинги"},
             {"command": "help", "description": "Помощь"},
